@@ -1,0 +1,19 @@
+[package]
+name = "promptwho-storage-surreal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+promptwho-storage = { path = "../promptwho-storage" }
+promptwho-protocol = { path = "../promptwho-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+surrealdb.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"
+tokio.workspace = true

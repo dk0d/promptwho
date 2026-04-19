@@ -1,0 +1,22 @@
+[package]
+name = "promptwho-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pwho"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+bat = { version = "0.26.1", features = ["regex-fancy"] }
+clap = { workspace = true, features = ["color"] }
+promptwho-core = { path = "../promptwho-core" }
+promptwho-server = { path = "../promptwho-server" }
+promptwho-storage-surreal = { path = "../promptwho-storage-surreal" }
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "chrono", "json", "serde", "serde_json"] }
