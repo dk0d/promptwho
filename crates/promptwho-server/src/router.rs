@@ -1,4 +1,8 @@
-use axum::{Router, response::Html, routing::get};
+use axum::{
+    Router,
+    response::Html,
+    routing::{get, post},
+};
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -35,8 +39,15 @@ pub fn build_app_router(state: AppState) -> OpenApiRouter {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let (router, api) = build_app_router(state).split_for_parts();
-    router
+    let (router, api) = build_app_router(state.clone()).split_for_parts();
+
+    Router::new()
+        .route(
+            "/v1/opencode/events",
+            post(crate::routes::events::ingest_opencode_events),
+        )
+        .with_state(state)
+        .merge(router)
         .route(
             "/docs",
             get({

@@ -6,6 +6,8 @@ use crate::event::EventEnvelope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IngestEventsRequest {
+    #[serde(alias = "requestId")]
+    #[serde(deserialize_with = "crate::uuid_serde::deserialize_uuid")]
     pub request_id: Uuid,
     pub events: Vec<EventEnvelope>,
 }

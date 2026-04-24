@@ -3,8 +3,11 @@ use std::sync::Arc;
 use axum_test::{TestResponse, TestServer, http::StatusCode};
 use promptwho_protocol::{
     ErrorResponse, EventEnvelope, EventPayload, GitSnapshotPayload, IngestEventsRequest,
-    IngestEventsResponse, MessageAddedPayload, PluginSource, ProjectRef, ProtocolVersion,
-    SessionRef, SessionStartedPayload, ToolCalledPayload, ToolResultPayload,
+    IngestEventsResponse, IngestOpencodeEventsRequest, Message, MessageAddedPayload,
+    MessagePartUpdatedProperties, MessageUpdatedProperties, OpencodeContext, OpencodeEvent,
+    OpencodeEventEnvelope, OpencodeProject, Part, PluginSource, ProjectRef, ProtocolVersion,
+    SessionInfoProperties, SessionRef, SessionStartedPayload, ToolCalledPayload, ToolResultPayload,
+    ToolState,
 };
 use promptwho_server::{AppState, build_router};
 use promptwho_storage::{ConversationStore, EventQuery, EventStore};
@@ -33,6 +36,19 @@ fn test_source() -> PluginSource {
         plugin: "opencode".to_string(),
         plugin_version: "0.1.0".to_string(),
         runtime: "bun".to_string(),
+    }
+}
+
+fn test_opencode_project() -> OpencodeProject {
+    OpencodeProject {
+        id: "project-test".to_string(),
+        worktree: "/tmp/promptwho-test".to_string(),
+        vcs: Some("git".to_string()),
+        name: Some("promptwho-test".to_string()),
+        icon: None,
+        commands: None,
+        time: None,
+        sandboxes: vec![],
     }
 }
 
@@ -247,4 +263,199 @@ async fn ingest_events_returns_json_errors_when_requested() {
     response.assert_status_bad_request();
     let body = response.json::<ErrorResponse>();
     assert_eq!(body.code, "invalid_msgpack");
+}
+
+#[tokio::test]
+async fn ingest_opencode_events_normalizes_and_persists_records() {
+    let (_temp_dir, store) = test_store().await;
+    let state = AppState {
+        store: store.clone(),
+    };
+    let server = TestServer::new(build_router(state));
+
+    let request_id = Uuid::new_v4();
+
+    let response: TestResponse = server
+        .post("/v1/opencode/events")
+        .msgpack(&IngestOpencodeEventsRequest {
+            request_id,
+            events: vec![
+                OpencodeEventEnvelope {
+                    context: OpencodeContext {
+                        project: test_opencode_project(),
+                        directory: "/tmp/promptwho-test".to_string(),
+                        worktree: "/tmp/promptwho-test".to_string(),
+                    },
+                    event: OpencodeEvent::SessionCreated {
+                        properties: SessionInfoProperties {
+                            session_id: "session-test".to_string(),
+                            info: promptwho_protocol::opencode::Session {
+                                id: "session-test".to_string(),
+                                slug: "session-test".to_string(),
+                                project_id: "project-test".to_string(),
+                                workspace_id: None,
+                                directory: "/tmp/promptwho-test".to_string(),
+                                parent_id: None,
+                                summary: None,
+                                share: None,
+                                title: "Session Test".to_string(),
+                                version: "opencode-test".to_string(),
+                                time: promptwho_protocol::opencode::SessionTime {
+                                    created: 0,
+                                    updated: 0,
+                                    compacting: None,
+                                    archived: None,
+                                },
+                                permission: None,
+                                revert: None,
+                            },
+                        },
+                    },
+                },
+                OpencodeEventEnvelope {
+                    context: OpencodeContext {
+                        project: test_opencode_project(),
+                        directory: "/tmp/promptwho-test".to_string(),
+                        worktree: "/tmp/promptwho-test".to_string(),
+                    },
+                    event: OpencodeEvent::MessageUpdated {
+                        properties: MessageUpdatedProperties {
+                            session_id: "session-test".to_string(),
+                            info: Message::User {
+                                id: "message-1".to_string(),
+                                session_id: "session-test".to_string(),
+                                time: promptwho_protocol::opencode::MessageTime {
+                                    created: 1,
+                                    completed: None,
+                                },
+                                format: None,
+                                summary: Some(promptwho_protocol::opencode::UserMessageSummary {
+                                    title: None,
+                                    body: Some("hello from opencode".to_string()),
+                                    diffs: vec![],
+                                }),
+                                agent: "test".to_string(),
+                                model: promptwho_protocol::opencode::ModelRef {
+                                    provider_id: "openai".to_string(),
+                                    model_id: "gpt-test".to_string(),
+                                    variant: None,
+                                },
+                                system: None,
+                                tools: None,
+                            },
+                        },
+                    },
+                },
+                OpencodeEventEnvelope {
+                    context: OpencodeContext {
+                        project: test_opencode_project(),
+                        directory: "/tmp/promptwho-test".to_string(),
+                        worktree: "/tmp/promptwho-test".to_string(),
+                    },
+                    event: OpencodeEvent::MessagePartUpdated {
+                        properties: MessagePartUpdatedProperties {
+                            session_id: "session-test".to_string(),
+                            time: 2,
+                            part: Part::Tool {
+                                id: "part-1".to_string(),
+                                session_id: "session-test".to_string(),
+                                message_id: "message-2".to_string(),
+                                call_id: "tool-call-1".to_string(),
+                                tool: "bash".to_string(),
+                                state: ToolState::Running {
+                                    input: json!({"command": "git status"}),
+                                    title: None,
+                                    metadata: None,
+                                    time: promptwho_protocol::opencode::PartTimeRange {
+                                        start: 2,
+                                        end: None,
+                                    },
+                                },
+                                metadata: None,
+                            },
+                        },
+                    },
+                },
+                OpencodeEventEnvelope {
+                    context: OpencodeContext {
+                        project: test_opencode_project(),
+                        directory: "/tmp/promptwho-test".to_string(),
+                        worktree: "/tmp/promptwho-test".to_string(),
+                    },
+                    event: OpencodeEvent::MessagePartUpdated {
+                        properties: MessagePartUpdatedProperties {
+                            session_id: "session-test".to_string(),
+                            time: 3,
+                            part: Part::Tool {
+                                id: "part-1".to_string(),
+                                session_id: "session-test".to_string(),
+                                message_id: "message-2".to_string(),
+                                call_id: "tool-call-1".to_string(),
+                                tool: "bash".to_string(),
+                                state: ToolState::Completed {
+                                    input: json!({"command": "git status"}),
+                                    output: "On branch main".to_string(),
+                                    title: "git status".to_string(),
+                                    metadata: json!({}),
+                                    time: promptwho_protocol::opencode::PartTimeRange {
+                                        start: 2,
+                                        end: Some(3),
+                                    },
+                                    attachments: None,
+                                },
+                                metadata: None,
+                            },
+                        },
+                    },
+                },
+                OpencodeEventEnvelope {
+                    context: OpencodeContext {
+                        project: test_opencode_project(),
+                        directory: "/tmp/promptwho-test".to_string(),
+                        worktree: "/tmp/promptwho-test".to_string(),
+                    },
+                    event: OpencodeEvent::FileEdited {
+                        properties: promptwho_protocol::opencode::FileProperties {
+                            file: "README.md".to_string(),
+                        },
+                    },
+                },
+            ],
+        })
+        .await;
+
+    response.assert_status(StatusCode::ACCEPTED);
+    let body = response.msgpack::<IngestEventsResponse>();
+    assert_eq!(body.request_id, request_id);
+    assert_eq!(body.accepted, 4);
+    assert_eq!(body.rejected, 0);
+
+    let all_events = store
+        .list_events(EventQuery {
+            project_id: Some("project-test".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("event listing should succeed");
+    assert_eq!(all_events.len(), 4);
+    assert!(all_events.iter().any(|event| event.action == "session.started"));
+    assert!(all_events.iter().any(|event| event.action == "message.added"));
+    assert!(all_events.iter().any(|event| event.action == "tool.called"));
+    assert!(all_events.iter().any(|event| event.action == "tool.result"));
+
+    let stored_session = store
+        .get_session("session-test".to_string())
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should exist");
+    assert_eq!(stored_session.provider, "opencode-test");
+    assert_eq!(stored_session.model, "unknown");
+
+    let messages = store
+        .list_messages("session-test".to_string())
+        .await
+        .expect("message listing should succeed");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content, "hello from opencode");
+    assert_eq!(messages[0].role, "user");
 }
