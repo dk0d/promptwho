@@ -20,6 +20,7 @@ pub trait EventStore: Send + Sync {
 #[async_trait]
 pub trait ConversationStore: Send + Sync {
     async fn upsert_project(&self, project: Project) -> Result<(), StoreError>;
+    async fn list_projects(&self) -> Result<Vec<Project>, StoreError>;
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError>;
     async fn append_message(&self, message: Message) -> Result<(), StoreError>;
     async fn record_tool_call(&self, call: ToolCall) -> Result<(), StoreError>;
@@ -168,6 +169,10 @@ where
 {
     async fn upsert_project(&self, project: Project) -> Result<(), StoreError> {
         (**self).upsert_project(project).await
+    }
+
+    async fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
+        (**self).list_projects().await
     }
 
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError> {
