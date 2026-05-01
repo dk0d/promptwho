@@ -38,6 +38,8 @@ pub enum EventAction {
     SessionStarted,
     #[serde(rename = "session.ended")]
     SessionEnded,
+    #[serde(rename = "session.diff")]
+    SessionDiff,
     #[serde(rename = "message.added")]
     MessageAdded,
     #[serde(rename = "tool.called")]
@@ -66,6 +68,8 @@ pub enum EventPayload {
     SessionStarted(SessionStartedPayload),
     #[serde(rename = "session.ended")]
     SessionEnded(SessionEndedPayload),
+    #[serde(rename = "session.diff")]
+    SessionDiff(SessionDiffPayload),
     #[serde(rename = "message.added")]
     MessageAdded(MessageAddedPayload),
     #[serde(rename = "tool.called")]
@@ -82,6 +86,7 @@ impl EventPayload {
         match self {
             EventPayload::SessionStarted(_) => EventAction::SessionStarted,
             EventPayload::SessionEnded(_) => EventAction::SessionEnded,
+            EventPayload::SessionDiff(_) => EventAction::SessionDiff,
             EventPayload::MessageAdded(_) => EventAction::MessageAdded,
             EventPayload::ToolCalled(_) => EventAction::ToolCalled,
             EventPayload::ToolResult(_) => EventAction::ToolResult,
@@ -118,6 +123,24 @@ pub struct SessionStartedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SessionEndedPayload {
     pub reason: Option<String>,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SessionDiffFile {
+    pub file: String,
+    pub patch: String,
+    pub additions: i64,
+    pub deletions: i64,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SessionDiffPayload {
+    #[serde(default)]
+    pub diff: Vec<SessionDiffFile>,
     #[serde(default)]
     #[schema(value_type = Object)]
     pub metadata: Value,

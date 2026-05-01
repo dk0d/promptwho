@@ -5,11 +5,21 @@ use uuid::Uuid;
 use crate::event::EventEnvelope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "flavor", rename_all = "lowercase")]
 pub struct IngestEventsRequest {
     #[serde(alias = "requestId")]
     #[serde(deserialize_with = "crate::uuid_serde::deserialize_uuid")]
     pub request_id: Uuid,
     pub events: Vec<EventEnvelope>,
+}
+
+impl IngestEventsRequest {
+    pub fn actions(&self) -> Vec<String> {
+        self.events
+            .iter()
+            .map(|e| e.payload.action().to_string())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
