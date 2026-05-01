@@ -1,29 +1,28 @@
-use time::OffsetDateTime;
-
 use crate::models::ProjectId;
+use promptwho_protocol::TimestampUtc;
 
 #[derive(Debug, Clone, Default)]
 pub struct EventQuery {
     pub project_id: Option<ProjectId>,
     pub session_id: Option<String>,
     pub action: Option<String>,
-    pub occurred_after: Option<OffsetDateTime>,
-    pub occurred_before: Option<OffsetDateTime>,
+    pub occurred_after: Option<TimestampUtc>,
+    pub occurred_before: Option<TimestampUtc>,
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionQuery {
     pub project_id: Option<ProjectId>,
-    pub started_after: Option<OffsetDateTime>,
-    pub started_before: Option<OffsetDateTime>,
+    pub started_after: Option<TimestampUtc>,
+    pub started_before: Option<TimestampUtc>,
     pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct CommitQuery {
-    pub committed_after: Option<OffsetDateTime>,
-    pub committed_before: Option<OffsetDateTime>,
+    pub committed_after: Option<TimestampUtc>,
+    pub committed_before: Option<TimestampUtc>,
     pub limit: Option<u32>,
 }
 

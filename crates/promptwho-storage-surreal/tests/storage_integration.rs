@@ -1,6 +1,6 @@
 use promptwho_protocol::{
     EventEnvelope, EventPayload, GitSnapshotPayload, MessageAddedPayload, PluginSource, ProjectRef,
-    ProtocolVersion, SessionRef, SessionStartedPayload,
+    ProtocolVersion, SessionRef, SessionStartedPayload, TimestampUtc,
 };
 use promptwho_storage::{
     ConversationStore, EventQuery, EventStore, GitCommit, GitCommitFile, GitCommitHunk,
@@ -10,8 +10,12 @@ use promptwho_storage::{
 use promptwho_storage_surreal::{SurrealConfig, SurrealStore};
 use serde_json::json;
 use tempfile::TempDir;
-use time::{Duration, OffsetDateTime};
+
 use uuid::Uuid;
+
+fn plus_seconds(ts: TimestampUtc, seconds: i64) -> TimestampUtc {
+    ts + chrono::TimeDelta::seconds(seconds)
+}
 
 fn test_project_ref() -> ProjectRef {
     ProjectRef {
@@ -59,7 +63,7 @@ async fn test_store() -> (TempDir, SurrealStore) {
 
 fn stored_event(
     id: Uuid,
-    occurred_at: OffsetDateTime,
+    occurred_at: TimestampUtc,
     action: &str,
     project_id: &str,
     session_id: Option<&str>,
@@ -91,14 +95,14 @@ fn stored_event(
                 metadata: json!({}),
             }),
         },
-        ingested_at: occurred_at + Duration::seconds(1),
+        ingested_at: plus_seconds(occurred_at, 1),
     }
 }
 
 #[tokio::test]
 async fn event_store_round_trips_and_filters_events() {
     let (_temp_dir, store) = test_store().await;
-    let now = OffsetDateTime::UNIX_EPOCH;
+    let now = chrono::DateTime::UNIX_EPOCH;
 
     let session_event = stored_event(
         Uuid::new_v4(),
@@ -109,7 +113,7 @@ async fn event_store_round_trips_and_filters_events() {
     );
     let other_project_event = stored_event(
         Uuid::new_v4(),
-        now + Duration::seconds(10),
+        plus_seconds(now, 10),
         "tool.called",
         "project-b",
         Some("session-b"),
@@ -135,8 +139,8 @@ async fn event_store_round_trips_and_filters_events() {
             project_id: Some("project-a".to_string()),
             session_id: Some("session-a".to_string()),
             action: Some("message.added".to_string()),
-            occurred_after: Some(now - Duration::seconds(1)),
-            occurred_before: Some(now + Duration::seconds(1)),
+            occurred_after: Some(plus_seconds(now, -1)),
+            occurred_before: Some(plus_seconds(now, 1)),
             limit: Some(10),
         })
         .await
@@ -158,7 +162,7 @@ async fn event_store_round_trips_and_filters_events() {
 #[tokio::test]
 async fn conversation_store_round_trips_sessions_and_messages() {
     let (_temp_dir, store) = test_store().await;
-    let started_at = OffsetDateTime::UNIX_EPOCH;
+    let started_at = chrono::DateTime::UNIX_EPOCH;
 
     store
         .upsert_project(Project {
@@ -205,7 +209,7 @@ async fn conversation_store_round_trips_sessions_and_messages() {
             role: "assistant".to_string(),
             content: "second message".to_string(),
             token_count: Some(20),
-            created_at: started_at + Duration::seconds(5),
+            created_at: plus_seconds(started_at, 5),
             metadata: json!({}),
         })
         .await
@@ -222,8 +226,8 @@ async fn conversation_store_round_trips_sessions_and_messages() {
     let sessions = store
         .list_sessions(SessionQuery {
             project_id: Some("project-a".to_string()),
-            started_after: Some(started_at - Duration::seconds(1)),
-            started_before: Some(started_at + Duration::seconds(1)),
+            started_after: Some(plus_seconds(started_at, -1)),
+            started_before: Some(plus_seconds(started_at, 1)),
             limit: Some(10),
         })
         .await
@@ -244,7 +248,7 @@ async fn conversation_store_round_trips_sessions_and_messages() {
 #[tokio::test]
 async fn direct_projection_writes_accept_tool_and_git_records() {
     let (_temp_dir, store) = test_store().await;
-    let created_at = OffsetDateTime::UNIX_EPOCH;
+    let created_at = chrono::DateTime::UNIX_EPOCH;
     let project = test_project_ref();
     let session = test_session_ref();
 
@@ -290,7 +294,7 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
             tool_call_id: "tool-call-1".to_string(),
             success: true,
             output: json!({"stdout": "clean"}),
-            created_at: created_at + Duration::seconds(1),
+            created_at: plus_seconds(created_at, 1),
             metadata: json!({"exit_code": 0}),
         })
         .await
@@ -306,7 +310,7 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
             dirty: true,
             staged_files: vec!["src/lib.rs".to_string()],
             unstaged_files: vec!["README.md".to_string()],
-            created_at: created_at + Duration::seconds(2),
+            created_at: plus_seconds(created_at, 2),
         })
         .await
         .expect("git snapshot record should succeed");
@@ -322,7 +326,7 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
 #[tokio::test]
 async fn git_store_round_trips_commits_files_and_hunks() {
     let (_temp_dir, store) = test_store().await;
-    let committed_at = OffsetDateTime::UNIX_EPOCH;
+    let committed_at = chrono::DateTime::UNIX_EPOCH;
     let commit_oid = "abc123".to_string();
     let first_hunk_id = Uuid::new_v4();
     let second_hunk_id = Uuid::new_v4();
@@ -404,8 +408,8 @@ async fn git_store_round_trips_commits_files_and_hunks() {
         .list_commits_for_project(
             "project-a".to_string(),
             promptwho_storage::CommitQuery {
-                committed_after: Some(committed_at - Duration::seconds(1)),
-                committed_before: Some(committed_at + Duration::seconds(1)),
+                committed_after: Some(plus_seconds(committed_at, -1)),
+                committed_before: Some(plus_seconds(committed_at, 1)),
                 limit: Some(10),
             },
         )
@@ -441,7 +445,7 @@ async fn git_store_round_trips_commits_files_and_hunks() {
 #[tokio::test]
 async fn stored_events_can_round_trip_real_protocol_payloads() {
     let (_temp_dir, store) = test_store().await;
-    let occurred_at = OffsetDateTime::UNIX_EPOCH;
+    let occurred_at = chrono::DateTime::UNIX_EPOCH;
     let id = Uuid::new_v4();
 
     let event = StoredEvent {
@@ -465,7 +469,7 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
                 metadata: json!({"editor": "zed"}),
             }),
         },
-        ingested_at: occurred_at + Duration::seconds(1),
+        ingested_at: plus_seconds(occurred_at, 1),
     };
 
     let outcome = store
@@ -493,12 +497,12 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
         id: Uuid::new_v4(),
         project_id: "project-a".to_string(),
         session_id: Some("session-a".to_string()),
-        occurred_at: occurred_at + Duration::seconds(10),
+        occurred_at: plus_seconds(occurred_at, 10),
         action: "git.snapshot".to_string(),
         envelope: EventEnvelope {
             id: Uuid::new_v4(),
             version: ProtocolVersion::V1,
-            occurred_at: occurred_at + Duration::seconds(10),
+            occurred_at: plus_seconds(occurred_at, 10),
             project: test_project_ref(),
             session: Some(test_session_ref()),
             source: test_source(),
@@ -510,7 +514,7 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
                 unstaged_files: vec!["README.md".to_string()],
             }),
         },
-        ingested_at: occurred_at + Duration::seconds(11),
+        ingested_at: plus_seconds(occurred_at, 11),
     };
 
     store

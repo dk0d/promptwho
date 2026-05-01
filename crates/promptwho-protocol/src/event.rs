@@ -2,9 +2,10 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+use crate::TimestampUtc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -94,7 +95,8 @@ impl EventPayload {
 pub struct EventEnvelope {
     pub id: Uuid,
     pub version: ProtocolVersion,
-    pub occurred_at: OffsetDateTime,
+    #[schema(value_type = String, format = "date-time")]
+    pub occurred_at: TimestampUtc,
     pub project: ProjectRef,
     pub session: Option<SessionRef>,
     pub source: PluginSource,

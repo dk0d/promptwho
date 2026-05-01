@@ -11,7 +11,7 @@ promptwho-protocol = { path = "../promptwho-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 surrealdb.workspace = true
-time.workspace = true
+chrono.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

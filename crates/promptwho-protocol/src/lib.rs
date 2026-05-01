@@ -1,6 +1,7 @@
 pub mod event;
 pub mod opencode;
 pub mod server;
+pub mod time;
 mod uuid_serde;
 
 pub use event::{
@@ -14,3 +15,4 @@ pub use opencode::{
     SessionInfoProperties, ToolState,
 };
 pub use server::{ErrorResponse, HealthResponse, IngestEventsRequest, IngestEventsResponse};
+pub use time::TimestampUtc;

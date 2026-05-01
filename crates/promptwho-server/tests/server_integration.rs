@@ -14,7 +14,6 @@ use promptwho_storage::{ConversationStore, EventQuery, EventStore};
 use promptwho_storage_surreal::{SurrealConfig, SurrealStore};
 use serde_json::json;
 use tempfile::TempDir;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 fn test_project() -> ProjectRef {
@@ -92,7 +91,7 @@ async fn ingest_events_persists_surreal_records() {
     let project = test_project();
     let session = test_session();
     let source = test_source();
-    let occurred_at = OffsetDateTime::UNIX_EPOCH;
+    let occurred_at = chrono::DateTime::UNIX_EPOCH;
 
     let response: TestResponse = server
         .post("/v1/events")

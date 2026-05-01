@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
-use promptwho_protocol::EventEnvelope;
+use promptwho_protocol::{EventEnvelope, TimestampUtc};
 
 pub type ProjectId = String;
 pub type SessionId = String;
@@ -16,10 +15,10 @@ pub struct StoredEvent {
     pub id: Uuid,
     pub project_id: ProjectId,
     pub session_id: Option<SessionId>,
-    pub occurred_at: OffsetDateTime,
+    pub occurred_at: TimestampUtc,
     pub action: String,
     pub envelope: EventEnvelope,
-    pub ingested_at: OffsetDateTime,
+    pub ingested_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +37,7 @@ pub struct Project {
     pub id: ProjectId,
     pub root: String,
     pub name: Option<String>,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +48,8 @@ pub struct Session {
     pub model: String,
     pub branch: Option<String>,
     pub head_commit: Option<String>,
-    pub started_at: OffsetDateTime,
-    pub ended_at: Option<OffsetDateTime>,
+    pub started_at: TimestampUtc,
+    pub ended_at: Option<TimestampUtc>,
     pub metadata: Value,
 }
 
@@ -60,8 +59,8 @@ pub struct SessionSummary {
     pub project_id: ProjectId,
     pub provider: String,
     pub model: String,
-    pub started_at: OffsetDateTime,
-    pub ended_at: Option<OffsetDateTime>,
+    pub started_at: TimestampUtc,
+    pub ended_at: Option<TimestampUtc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +70,7 @@ pub struct Message {
     pub role: String,
     pub content: String,
     pub token_count: Option<u32>,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -81,7 +80,7 @@ pub struct ToolCall {
     pub session_id: SessionId,
     pub tool_name: String,
     pub input: Value,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -90,7 +89,7 @@ pub struct ToolResult {
     pub tool_call_id: ToolCallId,
     pub success: bool,
     pub output: Value,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -104,7 +103,7 @@ pub struct GitSnapshot {
     pub dirty: bool,
     pub staged_files: Vec<String>,
     pub unstaged_files: Vec<String>,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +114,7 @@ pub struct GitCommit {
     pub author_name: Option<String>,
     pub author_email: Option<String>,
     pub message: String,
-    pub committed_at: OffsetDateTime,
+    pub committed_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,7 +148,7 @@ pub struct GitCommitHunk {
 pub struct GitFileHistoryRow {
     pub commit_oid: GitOid,
     pub path: String,
-    pub committed_at: OffsetDateTime,
+    pub committed_at: TimestampUtc,
     pub message: String,
 }
 
@@ -160,7 +159,7 @@ pub struct SessionCodeChange {
     pub project_id: ProjectId,
     pub tool_call_id: Option<ToolCallId>,
     pub source: String,
-    pub captured_at: OffsetDateTime,
+    pub captured_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -181,7 +180,7 @@ pub struct SessionChangeHunk {
     pub removed_line_count: u32,
     pub added_lines_fingerprint: Option<String>,
     pub removed_lines_fingerprint: Option<String>,
-    pub captured_at: OffsetDateTime,
+    pub captured_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -191,7 +190,7 @@ pub struct ExecutionTrace {
     pub project_id: ProjectId,
     pub service_name: Option<String>,
     pub root_span_name: Option<String>,
-    pub started_at: OffsetDateTime,
+    pub started_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -204,10 +203,10 @@ pub struct TraceFrame {
     pub project_id: ProjectId,
     pub session_id: Option<SessionId>,
     pub name: Option<String>,
-    pub started_at: Option<OffsetDateTime>,
-    pub ended_at: Option<OffsetDateTime>,
+    pub started_at: Option<TimestampUtc>,
+    pub ended_at: Option<TimestampUtc>,
     pub metadata: Value,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,7 +220,7 @@ pub struct CodeLocation {
     pub end_line: Option<u32>,
     pub confidence: f32,
     pub metadata: Value,
-    pub resolved_at: OffsetDateTime,
+    pub resolved_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,7 +234,7 @@ pub struct PatchAttribution {
     pub score: f32,
     pub algorithm_version: String,
     pub reasons: Vec<String>,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,7 +246,7 @@ pub struct CommitSessionSummary {
     pub patch_count: u32,
     pub score: f32,
     pub summary: Vec<String>,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,7 +257,7 @@ pub struct EmbeddingRecord {
     pub content_id: String,
     pub embedding: Vec<f32>,
     pub metadata: Value,
-    pub created_at: OffsetDateTime,
+    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

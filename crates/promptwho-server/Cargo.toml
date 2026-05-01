@@ -22,10 +22,13 @@ tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
 utoipa-scalar.workspace = true
+uuid.workspace = true
+chrono.workspace = true
 axum-msgpack = "0.5.0"
+
 
 [dev-dependencies]
 axum-test = { version = "20.0.0", features = ["msgpack"] }
 tempfile = "3.23.0"
-time.workspace = true
+chrono.workspace = true
 uuid.workspace = true
