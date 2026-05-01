@@ -10,16 +10,130 @@ use promptwho_storage::{
     TextSearchQuery, ToolCall, ToolResult, TraceFrame, TraceLinkQuery, TraceStore, VectorHit,
     VectorSearchQuery, VectorSearchStore,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use surrealdb::types::{
+    Array, Error as SurrealTypeError, Kind, Number, Object, SurrealValue, Value,
+};
 use surrealdb::{
     Surreal,
     engine::any::{Any, connect},
     opt::auth::Root,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SurrealRecord<T> {
-    value: T,
+struct Stored<T>(T);
+
+// fn json_value_kind() -> Kind {
+//     Kind::either(vec![
+//         Kind::Null,
+//         Kind::Bool,
+//         Kind::Int,
+//         Kind::Float,
+//         Kind::Decimal,
+//         Kind::String,
+//         Kind::Array(Box::new(Kind::Any), None),
+//         Kind::Object,
+//     ])
+// }
+
+// fn stored_kind() -> Kind {
+//     Kind::Literal(KindLiteral::Object(BTreeMap::from([(
+//         "value".to_string(),
+//         json_value_kind(),
+//     )])))
+// }
+
+fn json_to_surreal_value(value: serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(value) => Value::Bool(value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Value::Number(Number::from(value))
+            } else if let Some(value) = value.as_u64() {
+                match i64::try_from(value) {
+                    Ok(value) => Value::Number(Number::from(value)),
+                    Err(_) => {
+                        let value = surrealdb::types::Decimal::from_str_exact(&value.to_string())
+                            .expect("failed to convert u64 JSON number to decimal");
+                        Value::Number(Number::from(value))
+                    }
+                }
+            } else if let Some(value) = value.as_f64() {
+                Value::Number(Number::from(value))
+            } else {
+                panic!("unsupported JSON number representation")
+            }
+        }
+        serde_json::Value::String(value) => Value::String(value),
+        serde_json::Value::Array(values) => Value::Array(Array::from(
+            values
+                .into_iter()
+                .map(json_to_surreal_value)
+                .collect::<Vec<_>>(),
+        )),
+        serde_json::Value::Object(values) => Value::Object(Object::from_iter(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, json_to_surreal_value(value))),
+        )),
+    }
+}
+
+fn surreal_to_json_value(value: Value) -> serde_json::Value {
+    match value {
+        Value::None | Value::Null => serde_json::Value::Null,
+        Value::Bool(value) => serde_json::Value::Bool(value),
+        Value::Number(value) => match value {
+            Number::Int(value) => serde_json::Value::Number(value.into()),
+            Number::Float(value) => serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Number::Decimal(value) => serde_json::Value::String(value.to_string()),
+        },
+        Value::String(value) => serde_json::Value::String(value),
+        Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(surreal_to_json_value)
+                .collect::<Vec<_>>(),
+        ),
+        Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, surreal_to_json_value(value)))
+                .collect(),
+        ),
+        value => value.into_json_value(),
+    }
+}
+
+impl<T> SurrealValue for Stored<T>
+where
+    T: Serialize + DeserializeOwned,
+{
+    fn kind_of() -> surrealdb::types::Kind {
+        // stored_kind()
+        Kind::Object
+    }
+
+    fn into_value(self) -> Value {
+        let json = serde_json::to_value(self.0).expect("failed to serialize stored value");
+        let mut object = Object::new();
+        object.insert("value".to_string(), json_to_surreal_value(json));
+        Value::Object(object)
+    }
+
+    fn from_value(value: Value) -> Result<Self, surrealdb::types::Error> {
+        let mut object = value.into_object()?;
+        let value = object
+            .remove("value")
+            .ok_or_else(|| SurrealTypeError::thrown("missing stored value envelope".to_string()))?;
+        let inner = serde_json::from_value(surreal_to_json_value(value))
+            .map_err(|err| SurrealTypeError::thrown(err.to_string()))?;
+        Ok(Self(inner))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -46,13 +160,22 @@ impl SurrealStore {
             .await
             .map_err(|err| StoreError::Message(err.to_string()))?;
 
-        if let (Some(username), Some(password)) =
-            (config.username.as_deref(), config.password.as_deref())
-        {
-            db.signin(Root { username, password })
-                .await
-                .map_err(|err| StoreError::Message(err.to_string()))?;
-        }
+        let username = config.username.as_deref().unwrap_or("root");
+        let password = config.password.as_deref().unwrap_or("secret");
+
+        db.query(format!(
+            "DEFINE USER {} ON ROOT PASSWORD '{}' ROLES OWNER",
+            username, password
+        ))
+        .await
+        .map_err(|err| StoreError::Message(err.to_string()))?;
+
+        db.signin(Root {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await
+        .map_err(|err| StoreError::Message(err.to_string()))?;
 
         db.use_ns(&config.namespace)
             .use_db(&config.database)
@@ -114,12 +237,12 @@ impl SurrealStore {
 
     async fn upsert_record<T>(&self, table: &str, id: &str, value: T) -> Result<(), StoreError>
     where
-        T: Serialize + DeserializeOwned + 'static,
+        T: Serialize + DeserializeOwned,
     {
-        let _: Option<SurrealRecord<T>> = self
+        let _: Option<Stored<T>> = self
             .db
             .upsert((table, id))
-            .content(SurrealRecord { value })
+            .content(Stored(value))
             .await
             .map_err(|err| StoreError::Message(err.to_string()))?;
 
@@ -128,28 +251,36 @@ impl SurrealStore {
 
     async fn select_record<T>(&self, table: &str, id: &str) -> Result<Option<T>, StoreError>
     where
-        T: DeserializeOwned,
+        T: Serialize + DeserializeOwned,
     {
-        let record: Option<SurrealRecord<T>> = self
+        let record: Option<Stored<T>> = self
             .db
             .select((table, id))
             .await
             .map_err(|err| StoreError::Message(err.to_string()))?;
 
-        Ok(record.map(|record| record.value))
+        Ok(record.map(|record| record.0))
     }
 
-    async fn select_table<T>(&self, table: &str) -> Result<Vec<T>, StoreError>
+    async fn query_table<T>(
+        &self,
+        sql: &str,
+        bindings: JsonMap<String, JsonValue>,
+    ) -> Result<Vec<T>, StoreError>
     where
-        T: DeserializeOwned,
+        T: Serialize + DeserializeOwned,
     {
-        let records: Vec<SurrealRecord<T>> = self
+        let mut response = self
             .db
-            .select(table)
+            .query(sql.to_string())
+            .bind(JsonValue::Object(bindings))
             .await
             .map_err(|err| StoreError::Message(err.to_string()))?;
+        let records: Vec<Stored<T>> = response
+            .take(0)
+            .map_err(|err| StoreError::Message(err.to_string()))?;
 
-        Ok(records.into_iter().map(|record| record.value).collect())
+        Ok(records.into_iter().map(|record| record.0).collect())
     }
 
     fn table_scoped_id(parts: &[&str]) -> String {
@@ -179,12 +310,21 @@ impl SupportsSyncMetadata for SurrealStore {
 impl EventStore for SurrealStore {
     async fn append_event(&self, event: StoredEvent) -> Result<AppendOutcome, StoreError> {
         let event_id = event.id.to_string();
-        let created: Option<SurrealRecord<StoredEvent>> = self
+        let created: Option<Stored<StoredEvent>> = match self
             .db
             .create(("raw_events", event_id.as_str()))
-            .content(SurrealRecord { value: event })
+            .content(Stored(event))
             .await
-            .map_err(|err| StoreError::Message(err.to_string()))?;
+        {
+            Ok(created) => created,
+            Err(err) => {
+                let message = err.to_string();
+                if message.contains("already exists") {
+                    return Ok(AppendOutcome { inserted: false });
+                }
+                return Err(StoreError::Message(message));
+            }
+        };
 
         Ok(AppendOutcome {
             inserted: created.is_some(),
@@ -212,40 +352,54 @@ impl EventStore for SurrealStore {
     }
 
     async fn list_events(&self, query: EventQuery) -> Result<Vec<StoredEvent>, StoreError> {
-        let mut events = self.select_table::<StoredEvent>("raw_events").await?;
+        let mut conditions = Vec::new();
+        let mut bindings = JsonMap::new();
 
-        events.retain(|event| {
-            query
-                .project_id
-                .as_ref()
-                .is_none_or(|project_id| &event.project_id == project_id)
-                && query
-                    .session_id
-                    .as_ref()
-                    .is_none_or(|session_id| event.session_id.as_ref() == Some(session_id))
-                && query
-                    .action
-                    .as_ref()
-                    .is_none_or(|action| &event.action == action)
-                && query
-                    .occurred_after
-                    .is_none_or(|occurred_after| event.occurred_at >= occurred_after)
-                && query
-                    .occurred_before
-                    .is_none_or(|occurred_before| event.occurred_at <= occurred_before)
-        });
-
-        events.sort_by(|left, right| {
-            left.occurred_at
-                .cmp(&right.occurred_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        if let Some(limit) = query.limit {
-            events.truncate(limit as usize);
+        if let Some(project_id) = query.project_id {
+            conditions.push("value.project_id = $project_id".to_string());
+            bindings.insert("project_id".to_string(), JsonValue::String(project_id));
         }
 
-        Ok(events)
+        if let Some(session_id) = query.session_id {
+            conditions.push("value.session_id = $session_id".to_string());
+            bindings.insert("session_id".to_string(), JsonValue::String(session_id));
+        }
+
+        if let Some(action) = query.action {
+            conditions.push("value.action = $action".to_string());
+            bindings.insert("action".to_string(), JsonValue::String(action));
+        }
+
+        if let Some(occurred_after) = query.occurred_after {
+            conditions.push("value.occurred_at >= $occurred_after".to_string());
+            bindings.insert(
+                "occurred_after".to_string(),
+                serde_json::to_value(occurred_after)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        if let Some(occurred_before) = query.occurred_before {
+            conditions.push("value.occurred_at <= $occurred_before".to_string());
+            bindings.insert(
+                "occurred_before".to_string(),
+                serde_json::to_value(occurred_before)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        let mut sql = "SELECT * FROM raw_events".to_string();
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY value.occurred_at ASC, value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+
+        self.query_table(&sql, bindings).await
     }
 }
 
@@ -254,6 +408,14 @@ impl ConversationStore for SurrealStore {
     async fn upsert_project(&self, project: Project) -> Result<(), StoreError> {
         self.upsert_record("projects", &project.id.clone(), project)
             .await
+    }
+
+    async fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
+        self.query_table(
+            "SELECT * FROM projects ORDER BY value.id ASC",
+            JsonMap::new(),
+        )
+        .await
     }
 
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError> {
@@ -281,30 +443,44 @@ impl ConversationStore for SurrealStore {
     }
 
     async fn list_sessions(&self, query: SessionQuery) -> Result<Vec<SessionSummary>, StoreError> {
-        let mut sessions = self.select_table::<Session>("sessions").await?;
+        let mut conditions = Vec::new();
+        let mut bindings = JsonMap::new();
 
-        sessions.retain(|session| {
-            query
-                .project_id
-                .as_ref()
-                .is_none_or(|project_id| &session.project_id == project_id)
-                && query
-                    .started_after
-                    .is_none_or(|started_after| session.started_at >= started_after)
-                && query
-                    .started_before
-                    .is_none_or(|started_before| session.started_at <= started_before)
-        });
-
-        sessions.sort_by(|left, right| {
-            left.started_at
-                .cmp(&right.started_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        if let Some(limit) = query.limit {
-            sessions.truncate(limit as usize);
+        if let Some(project_id) = query.project_id {
+            conditions.push("value.project_id = $project_id".to_string());
+            bindings.insert("project_id".to_string(), JsonValue::String(project_id));
         }
+
+        if let Some(started_after) = query.started_after {
+            conditions.push("value.started_at >= $started_after".to_string());
+            bindings.insert(
+                "started_after".to_string(),
+                serde_json::to_value(started_after)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        if let Some(started_before) = query.started_before {
+            conditions.push("value.started_at <= $started_before".to_string());
+            bindings.insert(
+                "started_before".to_string(),
+                serde_json::to_value(started_before)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        let mut sql = "SELECT * FROM sessions".to_string();
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY value.started_at ASC, value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+
+        let sessions = self.query_table::<Session>(&sql, bindings).await?;
 
         Ok(sessions
             .into_iter()
@@ -320,15 +496,13 @@ impl ConversationStore for SurrealStore {
     }
 
     async fn list_messages(&self, session_id: SessionId) -> Result<Vec<Message>, StoreError> {
-        let mut messages = self.select_table::<Message>("messages").await?;
-        messages.retain(|message| message.session_id == session_id);
-        messages.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        Ok(messages)
+        let mut bindings = JsonMap::new();
+        bindings.insert("session_id".to_string(), JsonValue::String(session_id));
+        self.query_table(
+            "SELECT * FROM messages WHERE value.session_id = $session_id ORDER BY value.created_at ASC, value.id ASC",
+            bindings,
+        )
+        .await
     }
 }
 
@@ -371,29 +545,37 @@ impl GitStore for SurrealStore {
         project_id: ProjectId,
         query: CommitQuery,
     ) -> Result<Vec<GitCommit>, StoreError> {
-        let mut commits = self.select_table::<GitCommit>("git_commits").await?;
+        let mut conditions = vec!["value.project_id = $project_id".to_string()];
+        let mut bindings = JsonMap::new();
+        bindings.insert("project_id".to_string(), JsonValue::String(project_id));
 
-        commits.retain(|commit| {
-            commit.project_id == project_id
-                && query
-                    .committed_after
-                    .is_none_or(|committed_after| commit.committed_at >= committed_after)
-                && query
-                    .committed_before
-                    .is_none_or(|committed_before| commit.committed_at <= committed_before)
-        });
-
-        commits.sort_by(|left, right| {
-            left.committed_at
-                .cmp(&right.committed_at)
-                .then_with(|| left.oid.cmp(&right.oid))
-        });
-
-        if let Some(limit) = query.limit {
-            commits.truncate(limit as usize);
+        if let Some(committed_after) = query.committed_after {
+            conditions.push("value.committed_at >= $committed_after".to_string());
+            bindings.insert(
+                "committed_after".to_string(),
+                serde_json::to_value(committed_after)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
         }
 
-        Ok(commits)
+        if let Some(committed_before) = query.committed_before {
+            conditions.push("value.committed_at <= $committed_before".to_string());
+            bindings.insert(
+                "committed_before".to_string(),
+                serde_json::to_value(committed_before)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        let mut sql = "SELECT * FROM git_commits WHERE ".to_string();
+        sql.push_str(&conditions.join(" AND "));
+        sql.push_str(" ORDER BY value.committed_at ASC, value.oid ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+
+        self.query_table(&sql, bindings).await
     }
 
     async fn list_file_history(
@@ -401,52 +583,59 @@ impl GitStore for SurrealStore {
         project_id: ProjectId,
         path: &str,
     ) -> Result<Vec<GitFileHistoryRow>, StoreError> {
-        let commits = self
-            .list_commits_for_project(project_id, CommitQuery::default())
-            .await?;
+        let mut bindings = JsonMap::new();
+        bindings.insert(
+            "project_id".to_string(),
+            JsonValue::String(project_id.clone()),
+        );
+        bindings.insert("path".to_string(), JsonValue::String(path.to_string()));
+
         let commit_files = self
-            .select_table::<GitCommitFile>("git_commit_files")
+            .query_table::<GitCommitFile>(
+                "SELECT * FROM git_commit_files WHERE value.path = $path OR value.old_path = $path ORDER BY value.commit_oid ASC, value.path ASC",
+                bindings.clone(),
+            )
             .await?;
 
-        let mut history = commits
+        let commit_oids = commit_files
             .into_iter()
-            .filter(|commit| {
-                commit_files.iter().any(|file| {
-                    file.commit_oid == commit.oid
-                        && (file.path == path || file.old_path.as_deref() == Some(path))
-                })
-            })
+            .map(|file| file.commit_oid)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        if commit_oids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let commits = self
+            .list_commits_for_project(
+                project_id,
+                CommitQuery {
+                    limit: None,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        Ok(commits
+            .into_iter()
+            .filter(|commit| commit_oids.contains(&commit.oid))
             .map(|commit| GitFileHistoryRow {
                 commit_oid: commit.oid,
                 path: path.to_string(),
                 committed_at: commit.committed_at,
                 message: commit.message,
             })
-            .collect::<Vec<_>>();
-
-        history.sort_by(|left, right| {
-            left.committed_at
-                .cmp(&right.committed_at)
-                .then_with(|| left.commit_oid.cmp(&right.commit_oid))
-        });
-
-        Ok(history)
+            .collect())
     }
 
     async fn list_commit_hunks(&self, oid: GitOid) -> Result<Vec<GitCommitHunk>, StoreError> {
-        let mut hunks = self
-            .select_table::<GitCommitHunk>("git_commit_hunks")
-            .await?;
-        hunks.retain(|hunk| hunk.commit_oid == oid);
-        hunks.sort_by(|left, right| {
-            left.file_path
-                .cmp(&right.file_path)
-                .then_with(|| left.new_start.cmp(&right.new_start))
-                .then_with(|| left.old_start.cmp(&right.old_start))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        Ok(hunks)
+        let mut bindings = JsonMap::new();
+        bindings.insert("oid".to_string(), JsonValue::String(oid));
+        self.query_table(
+            "SELECT * FROM git_commit_hunks WHERE value.commit_oid = $oid ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC",
+            bindings,
+        )
+        .await
     }
 }
 
@@ -539,18 +728,145 @@ impl AttributionStore for SurrealStore {
 
 #[async_trait]
 impl SearchStore for SurrealStore {
-    async fn search_text(&self, _query: TextSearchQuery) -> Result<SearchResults, StoreError> {
-        Ok(SearchResults {
-            hits: vec![SearchResult {
-                kind: "todo".to_string(),
-                id: "search-not-implemented".to_string(),
-                title: "Search storage scaffolded".to_string(),
-                snippet: Some(
-                    "Implement text and semantic search in promptwho-storage-surreal".to_string(),
-                ),
-                score: 0.0,
-            }],
-        })
+    async fn search_text(&self, query: TextSearchQuery) -> Result<SearchResults, StoreError> {
+        let search = query.text.trim().to_lowercase();
+        if search.is_empty() {
+            return Ok(SearchResults::default());
+        }
+
+        let project_name_by_id = self
+            .query_table::<Project>(
+                "SELECT * FROM projects ORDER BY value.id ASC",
+                JsonMap::new(),
+            )
+            .await?
+            .into_iter()
+            .map(|project| (project.id, project.name))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut hits = Vec::new();
+
+        for session in self
+            .query_table::<Session>(
+                "SELECT * FROM sessions ORDER BY value.id ASC",
+                JsonMap::new(),
+            )
+            .await?
+        {
+            if query
+                .project_id
+                .as_ref()
+                .is_some_and(|project_id| &session.project_id != project_id)
+            {
+                continue;
+            }
+
+            let session_text = format!(
+                "{} {} {} {} {}",
+                session.id,
+                session.project_id,
+                session.provider,
+                session.model,
+                session.branch.as_deref().unwrap_or_default()
+            )
+            .to_lowercase();
+
+            if session_text.contains(&search) {
+                hits.push(SearchResult {
+                    kind: "session".to_string(),
+                    id: session.id.clone(),
+                    title: format!("{} / {}", session.provider, session.model,),
+                    snippet: Some(format!(
+                        "project={} branch={} started={}",
+                        project_name_by_id
+                            .get(&session.project_id)
+                            .and_then(|name| name.as_deref())
+                            .unwrap_or(session.project_id.as_str()),
+                        session.branch.as_deref().unwrap_or("-"),
+                        session.started_at,
+                    )),
+                    score: 1.0,
+                });
+            }
+        }
+
+        for message in self
+            .query_table::<Message>(
+                "SELECT * FROM messages ORDER BY value.id ASC",
+                JsonMap::new(),
+            )
+            .await?
+        {
+            let session = match self.get_session(message.session_id.clone()).await? {
+                Some(session) => session,
+                None => continue,
+            };
+
+            if query
+                .project_id
+                .as_ref()
+                .is_some_and(|project_id| &session.project_id != project_id)
+            {
+                continue;
+            }
+
+            let message_text =
+                format!("{} {} {}", message.id, message.role, message.content).to_lowercase();
+            if message_text.contains(&search) {
+                let snippet = if message.content.len() > 180 {
+                    format!("{}...", &message.content[..180])
+                } else {
+                    message.content.clone()
+                };
+
+                hits.push(SearchResult {
+                    kind: "message".to_string(),
+                    id: message.id.clone(),
+                    title: format!("{} message in {}", message.role, session.id),
+                    snippet: Some(snippet),
+                    score: 2.0,
+                });
+            }
+        }
+
+        for event in self
+            .list_events(EventQuery {
+                project_id: query.project_id.clone(),
+                limit: None,
+                ..Default::default()
+            })
+            .await?
+        {
+            let event_text = serde_json::to_string(&event.envelope)
+                .unwrap_or_default()
+                .to_lowercase();
+
+            if event_text.contains(&search) || event.action.to_lowercase().contains(&search) {
+                hits.push(SearchResult {
+                    kind: "event".to_string(),
+                    id: event.id.to_string(),
+                    title: format!("{} in {}", event.action, event.project_id),
+                    snippet: Some(format!(
+                        "occurred_at={} session={}",
+                        event.occurred_at,
+                        event.session_id.unwrap_or_default()
+                    )),
+                    score: 0.5,
+                });
+            }
+        }
+
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.kind.cmp(&right.kind))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        hits.truncate(query.limit as usize);
+
+        Ok(SearchResults { hits })
     }
 }
 

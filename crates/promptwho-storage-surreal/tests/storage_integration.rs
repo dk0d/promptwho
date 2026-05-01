@@ -160,6 +160,38 @@ async fn event_store_round_trips_and_filters_events() {
 }
 
 #[tokio::test]
+async fn event_store_treats_duplicate_event_ids_as_skipped() {
+    let (_temp_dir, store) = test_store().await;
+    let now = chrono::DateTime::UNIX_EPOCH;
+    let event = stored_event(
+        Uuid::new_v4(),
+        now,
+        "message.added",
+        "project-a",
+        Some("session-a"),
+    );
+
+    let first = store
+        .append_event(event.clone())
+        .await
+        .expect("first append should succeed");
+    assert!(first.inserted);
+
+    let second = store
+        .append_event(event.clone())
+        .await
+        .expect("duplicate append should be treated as a skip");
+    assert!(!second.inserted);
+
+    let events = store
+        .list_events(EventQuery::default())
+        .await
+        .expect("event listing should succeed");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, event.id);
+}
+
+#[tokio::test]
 async fn conversation_store_round_trips_sessions_and_messages() {
     let (_temp_dir, store) = test_store().await;
     let started_at = chrono::DateTime::UNIX_EPOCH;
