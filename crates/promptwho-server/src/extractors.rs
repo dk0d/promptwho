@@ -4,8 +4,10 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use rmp_serde::decode::Error as MsgPackDecodeError;
 use serde::{Serialize, de::DeserializeOwned};
 use std::ops::{Deref, DerefMut};
+use tracing::Level;
 
 use crate::errors::ServerError;
 
@@ -26,6 +28,13 @@ impl<T> MsgPackOrJson<T> {
         match self {
             MsgPackOrJson::MsgPack(_) => ResponseFormat::MsgPack,
             MsgPackOrJson::Json(_) => ResponseFormat::Json,
+        }
+    }
+}
+impl<T> AsRef<T> for MsgPackOrJson<T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            MsgPackOrJson::MsgPack(value) | MsgPackOrJson::Json(value) => value,
         }
     }
 }
@@ -73,17 +82,31 @@ where
     type Rejection = ServerError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let content_type = header_value(req.headers(), header::CONTENT_TYPE);
+        let accept = header_value(req.headers(), header::ACCEPT);
         let response_format = preferred_response_format(&req);
 
         if !has_msgpack_content_type(&req) {
+            tracing::warn!(
+                content_type = content_type.as_deref().unwrap_or("<missing>"),
+                accept = accept.as_deref().unwrap_or("<missing>"),
+                "Rejected ingest request with unsupported content type"
+            );
             return Err(ServerError::invalid_msgpack_content_type(response_format));
         }
 
         let bytes = Bytes::from_request(req, state).await.map_err(|err| {
+            tracing::warn!(
+                content_type = content_type.as_deref().unwrap_or("<missing>"),
+                accept = accept.as_deref().unwrap_or("<missing>"),
+                error = %err,
+                "Failed to read MsgPack request body"
+            );
             ServerError::invalid_msgpack_payload(err.to_string(), response_format)
         })?;
 
         let value = rmp_serde::from_slice(&bytes).map_err(|err| {
+            log_decode_error(&err, &bytes, content_type.as_deref(), accept.as_deref());
             ServerError::invalid_msgpack_payload(err.to_string(), response_format)
         })?;
 
@@ -91,6 +114,78 @@ where
             ResponseFormat::Json => Ok(ServerMsg(MsgPackOrJson::Json(value))),
             ResponseFormat::MsgPack => Ok(ServerMsg(MsgPackOrJson::MsgPack(value))),
         }
+    }
+}
+
+fn log_decode_error(
+    error: &MsgPackDecodeError,
+    bytes: &[u8],
+    content_type: Option<&str>,
+    accept: Option<&str>,
+) {
+    tracing::warn!(
+        content_type = content_type.unwrap_or("<missing>"),
+        accept = accept.unwrap_or("<missing>"),
+        body_len = bytes.len(),
+        error = %error,
+        error_kind = classify_decode_error(error),
+        "Failed to decode MsgPack ingest request"
+    );
+
+    if tracing::enabled!(Level::TRACE) {
+        tracing::trace!(
+            body_preview_hex = %preview_hex(bytes, 96),
+            body_preview_utf8 = preview_utf8(bytes, 96).as_deref().unwrap_or("<non-utf8>"),
+            "MsgPack ingest payload preview"
+        );
+    }
+}
+
+fn classify_decode_error(error: &MsgPackDecodeError) -> &'static str {
+    match error {
+        MsgPackDecodeError::InvalidMarkerRead(_) | MsgPackDecodeError::InvalidDataRead(_) => {
+            "malformed_msgpack"
+        }
+        MsgPackDecodeError::TypeMismatch(_)
+        | MsgPackDecodeError::OutOfRange
+        | MsgPackDecodeError::LengthMismatch(_)
+        | MsgPackDecodeError::Utf8Error(_)
+        | MsgPackDecodeError::Uncategorized(_) => "schema_mismatch",
+        MsgPackDecodeError::Syntax(_) => "invalid_value",
+        MsgPackDecodeError::DepthLimitExceeded => "depth_limit_exceeded",
+    }
+}
+
+fn header_value(headers: &axum::http::HeaderMap, name: header::HeaderName) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+fn preview_hex(bytes: &[u8], limit: usize) -> String {
+    let preview = &bytes[..bytes.len().min(limit)];
+    let mut rendered = preview
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bytes.len() > limit {
+        rendered.push_str(" ...");
+    }
+
+    rendered
+}
+
+fn preview_utf8(bytes: &[u8], limit: usize) -> Option<String> {
+    let preview = &bytes[..bytes.len().min(limit)];
+    let rendered = String::from_utf8(preview.to_vec()).ok()?;
+
+    if bytes.len() > limit {
+        Some(format!("{rendered}..."))
+    } else {
+        Some(rendered)
     }
 }
 
