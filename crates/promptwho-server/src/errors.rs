@@ -20,6 +20,8 @@ pub enum ServerError {
         error: promptwho_core::ingest::IngestError,
         response_format: ResponseFormat,
     },
+    #[error("{0}")]
+    Query(String),
 }
 
 impl ServerError {
@@ -46,8 +48,12 @@ impl ServerError {
     ) -> Self {
         Self::Store {
             error,
-            response_format: response_format.clone(),
+            response_format,
         }
+    }
+
+    pub fn query(error: promptwho_storage::StoreError) -> Self {
+        Self::Query(error.to_string())
     }
 }
 
@@ -71,6 +77,12 @@ impl IntoResponse for ServerError {
                 "store_error",
                 error.to_string(),
                 response_format,
+            ),
+            ServerError::Query(message) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "query_error",
+                message,
+                ResponseFormat::Json,
             ),
         };
 
