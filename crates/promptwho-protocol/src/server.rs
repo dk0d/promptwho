@@ -5,7 +5,6 @@ use uuid::Uuid;
 use crate::event::EventEnvelope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "flavor", rename_all = "lowercase")]
 pub struct IngestEventsRequest {
     #[serde(alias = "requestId")]
     #[serde(deserialize_with = "crate::uuid_serde::deserialize_uuid")]
