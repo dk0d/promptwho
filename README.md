@@ -1,3 +1,7 @@
+<div align="center">
+  <img src='./assets/promptwho-logo.png' width='50%' alt='promptwho-logo'/>
+</div>
+
 # `promptwho`
 
 First-pass workspace scaffold for a Rust-first attribution tool with a thin Opencode TypeScript plugin and a local server-client architecture.
