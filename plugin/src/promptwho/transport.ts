@@ -30,11 +30,12 @@ export class HttpMsgpackTransport implements PromptwhoTransport {
     }>,
   ): Promise<void> {
     const message = {
+      flavor: "opencode",
       request_id: crypto.randomUUID(),
       events,
     };
 
-    const response = await fetch(`${this.baseUrl}/v1/opencode/events`, {
+    const response = await fetch(`${this.baseUrl}/v1/events`, {
       method: "POST",
       headers: {
         "content-type": "application/msgpack",
@@ -57,8 +58,8 @@ export class HttpMsgpackTransport implements PromptwhoTransport {
             responseBody,
             eventTypes: events.map(({ event }) => event.type),
           }
-         }
-       },)
+        }
+      },)
       // throw new Error(
       //   `promptwho server rejected events: ${response.status} ${response.statusText}`,
       // );

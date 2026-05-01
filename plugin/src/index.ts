@@ -16,11 +16,7 @@ export const PromptwhoPlugin: Plugin = async ({
         [
           {
             context: {
-              project: {
-                id: project.id,
-                worktree: project.worktree,
-                vcs: project.vcs,
-              },
+              project,
               directory,
               worktree,
             },
@@ -28,7 +24,7 @@ export const PromptwhoPlugin: Plugin = async ({
           },
         ]);
     },
-    "chat.message": async ({ sessionID, agent, model, variant }) => { },
+    "chat.message": async ({ sessionID, agent, model, variant }, { message }) => { },
     "chat.params": async ({ sessionID, message, model }) => { },
     "shell.env": async ({ cwd, sessionID, callID }) => { },
   };
