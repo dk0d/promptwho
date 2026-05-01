@@ -4,6 +4,6 @@ pub mod ingest;
 pub mod telemetry;
 
 pub use attribution::AttributionService;
-pub use ingest::IngestService;
+pub use ingest::{IngestError, IngestService};
 
 pub use config::*;
