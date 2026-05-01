@@ -65,7 +65,9 @@ async fn main() -> Result<()> {
             todo!("Implement doctor command to check for common issues and provide diagnostics");
         }
         Command::Serve => {
-            run(&config).await?;
+            let r = run(&config).await;
+            tracing::info!("Promptwho server exited with result: {:?}", &r);
+            r?
         }
         Command::Config(args) => {
             if args.colors {
