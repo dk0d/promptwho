@@ -30,3 +30,16 @@ First-pass workspace scaffold for a Rust-first attribution tool with a thin Open
 - SurrealDB is the first schemaless backend for rapid iteration
 - local server replaces the previous daemon/IPC direction
 - OpenAPI docs are intended to be served from Scalar at `/docs`
+
+## Git watcher
+
+The CLI can watch a local git repository for new commits and publish `git.commit` events to `promptwho-server`.
+
+```bash
+pwho serve
+pwho watch git --git-dir .
+```
+
+Notes:
+- commit events include branch, HEAD commit, author, commit timestamp, title, and body
+- the watcher stores its last-seen HEAD in `.promptwho/git-watcher.json` to avoid replaying old commits on restart
