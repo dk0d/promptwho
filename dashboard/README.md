@@ -1,42 +1,69 @@
-# sv
+# `promptwho` dashboard
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit dashboard for browsing locally ingested promptwho data.
 
-## Creating a project
+The dashboard is a thin UI over the local `promptwho-server` API. It reads projects, sessions, messages, events, and search results from the server and renders them for local inspection.
 
-If you're seeing this, you've probably already done this step. Congrats!
+## Prerequisites
 
-```sh
-# create a new project
-npx sv create my-app
+- Bun installed
+- the promptwho server running locally, usually at `http://127.0.0.1:8765`
+
+Start the server from the workspace root:
+
+```bash
+cargo run -p promptwho-cli -- serve
 ```
 
-To recreate this project with the same configuration:
+## Development
 
-```sh
-# recreate this project
-bun x sv@0.15.1 create --template minimal --types ts --add tailwindcss="plugins:none" --install bun ./
+From `dashboard/`:
+
+```bash
+bun install
+bun run dev
 ```
 
-## Developing
+Useful commands:
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+```bash
+bun run check
+bun run build
+bun run preview
 ```
 
-## Building
+## Configuration
 
-To create a production version of your app:
+The dashboard reads the backend base URL from `PROMPTWHO_BASE_URL`.
 
-```sh
-npm run build
+Default:
+
+```bash
+PROMPTWHO_BASE_URL=http://127.0.0.1:8765
 ```
 
-You can preview the production build with `npm run preview`.
+Example:
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+```bash
+PROMPTWHO_BASE_URL=http://127.0.0.1:8765 bun run dev
+```
+
+If `PROMPTWHO_BASE_URL` is not set, the dashboard defaults to `http://127.0.0.1:8765`.
+
+## What it loads
+
+The dashboard currently reads from these server routes:
+
+- `GET /v1/projects`
+- `GET /v1/sessions`
+- `GET /v1/sessions/{session_id}/messages`
+- `GET /v1/events/query`
+- `GET /v1/search`
+
+If the server is unavailable or returns an error, the dashboard surfaces that failure in the UI rather than writing directly to storage itself.
+
+## Notes
+
+- this package is local-development focused
+- the main backend contract lives in the Rust server, not in the dashboard
+- UI behavior depends on promptwho data already being ingested by the server
