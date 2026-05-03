@@ -129,30 +129,41 @@
 			{onSessionChange}
 			{onEventLimitChange}
 		/>
-
-		<div class="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-			<div class="space-y-6">
-				<ProjectListCard
-					{projects}
-					selectedProjectId={data.filters.projectId}
-					onSelect={selectProject}
-				/>
-				<SessionListCard
-					{sessions}
-					{selectedProject}
-					selectedSessionId={data.filters.sessionId}
-					onSelect={selectSession}
-				/>
-			</div>
-
-			<div class="space-y-6">
-				<SearchResultsCard query={data.filters.query} {searchHits} />
-
-				<div class="grid gap-6 2xl:grid-cols-2">
-					<MessageListCard {messages} {selectedSession} />
-					<EventListCard {events} />
+		{#if data.dashboard.baseUrl === ""}
+			<div class="rounded-lg bg-accent p-4">
+				<div class="flex">
+					<div class="shrink-0">
+						No data available. Please set up your local PromptWho server and
+						connect it to the dashboard to see your projects, sessions,
+						messages, and events here.
+					</div>
 				</div>
 			</div>
-		</div>
+		{:else}
+			<div class="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+				<div class="space-y-6">
+					<ProjectListCard
+						{projects}
+						selectedProjectId={data.filters.projectId}
+						onSelect={selectProject}
+					/>
+					<SessionListCard
+						{sessions}
+						{selectedProject}
+						selectedSessionId={data.filters.sessionId}
+						onSelect={selectSession}
+					/>
+				</div>
+
+				<div class="space-y-6">
+					<SearchResultsCard query={data.filters.query} {searchHits} />
+
+					<div class="grid gap-6 2xl:grid-cols-2">
+						<MessageListCard {messages} {selectedSession} />
+						<EventListCard {events} />
+					</div>
+				</div>
+			</div>
+		{/if}
 	</div>
 </div>
