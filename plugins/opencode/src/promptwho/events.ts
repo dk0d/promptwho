@@ -58,7 +58,12 @@ type PromptwhoResolvedEvent = {
     id: string;
     version: "v1";
     occurred_at: string;
-    project: { id: string; root: string; name?: string };
+    project: {
+      id: PromptwhoProjectRefId;
+      root: string;
+      name?: string;
+      repository_fingerprint?: string;
+    };
     session?: { id: string };
     source: { plugin: string; plugin_version: string; runtime: string };
     action: TAction;
@@ -66,11 +71,24 @@ type PromptwhoResolvedEvent = {
   };
 }[PromptwhoAction];
 
+type PromptwhoProjectRefId =
+  | { Id: { id: string } }
+  | { Ext: { src: string; id: string } };
+
 const SOURCE = {
   plugin: "opencode",
   plugin_version: "1.14.30",
   runtime: "bun",
 } as const;
+
+function projectRefId(projectId: string): PromptwhoProjectRefId {
+  return {
+    Ext: {
+      src: SOURCE.plugin,
+      id: projectId,
+    },
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -136,7 +154,7 @@ function envelope<TAction extends PromptwhoAction>(
     version: "v1",
     occurred_at: eventOccurredAt(sourceEvent.event),
     project: {
-      id: sourceEvent.context.project.id,
+      id: projectRefId(sourceEvent.context.project.id),
       root: sourceEvent.context.worktree || sourceEvent.context.directory || sourceEvent.context.project.worktree,
       name: sourceEvent.context.project.name,
       repository_fingerprint: sourceEvent.context.project.repositoryFingerprint,
@@ -160,7 +178,7 @@ export function createEvent<TAction extends PromptwhoAction>(input: {
     version: "v1",
     occurred_at: input.occurredAt ?? new Date().toISOString(),
     project: {
-      id: input.context.project.id,
+      id: projectRefId(input.context.project.id),
       root: input.context.worktree || input.context.directory || input.context.project.worktree,
       name: input.context.project.name,
       repository_fingerprint: input.context.project.repositoryFingerprint,

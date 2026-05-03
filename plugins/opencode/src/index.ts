@@ -10,18 +10,29 @@ export const PromptwhoPlugin: Plugin = async ({
   worktree,
 }) => {
   const transport = new HttpMsgpackTransport();
-  const gitIdentity = await getGitProjectIdentity(worktree || directory);
-  const context = {
+  const baseContext = {
     project: {
       ...project,
-      repositoryFingerprint: gitIdentity?.repositoryFingerprint,
     },
     directory,
     worktree,
   };
 
+  async function resolveContext() {
+    const gitIdentity = await getGitProjectIdentity(worktree || directory);
+
+    return {
+      ...baseContext,
+      project: {
+        ...baseContext.project,
+        repositoryFingerprint: gitIdentity?.repositoryFingerprint,
+      },
+    };
+  }
+
   return {
     event: async ({ event }) => {
+      const context = await resolveContext();
       await transport.publish(
         client,
         [
@@ -34,6 +45,7 @@ export const PromptwhoPlugin: Plugin = async ({
     "chat.message": async () => { },
     "chat.params": async ({ sessionID, message, model }) => { },
     "tool.execute.before": async ({ tool, sessionID, callID }, { args }) => {
+      const context = await resolveContext();
       await transport.publishResolved(client, [
         createEvent({
           context,
@@ -48,6 +60,7 @@ export const PromptwhoPlugin: Plugin = async ({
       ]);
     },
     "tool.execute.after": async ({ tool, sessionID, callID }, output) => {
+      const context = await resolveContext();
       const snapshot = await getGitSnapshot(worktree || directory);
       const events = [
         createEvent({
@@ -79,6 +92,7 @@ export const PromptwhoPlugin: Plugin = async ({
       await transport.publishResolved(client, events);
     },
     "shell.env": async ({ cwd, sessionID, callID }) => {
+      const context = await resolveContext();
       await transport.publishResolved(client, [
         createEvent({
           context,
