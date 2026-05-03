@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Activity, FolderTree, MessagesSquare } from "@lucide/svelte";
-	import logoUrl from "../../../../../assets/promptwho-logo.png";
+	import logoUrl from "../../../../static/promptwho-logo.png";
 	import LightSwitch from "$lib/elements/light-switch.svelte";
 	import {
 		Card,
