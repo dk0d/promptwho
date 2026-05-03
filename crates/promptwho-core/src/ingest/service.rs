@@ -4,7 +4,7 @@ use promptwho_storage::{
     Project, ProjectQuery, Session, StoreError, StoredEvent, ToolCall,
 };
 use promptwho_storage::{ConversationStore, EventStore, GitStore};
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use promptwho_protocol::TimestampUtc;
@@ -17,6 +17,115 @@ pub enum IngestError {
     MissingSession,
     #[error("invalid event payload: {0}")]
     InvalidEvent(&'static str),
+}
+
+async fn upsert_message_content<S>(
+    store: &S,
+    message_id: String,
+    session_id: String,
+    role: String,
+    content: String,
+    token_count: Option<u32>,
+    occurred_at: TimestampUtc,
+    metadata: Value,
+) -> Result<(), IngestError>
+where
+    S: ConversationStore + ?Sized,
+{
+    let existing = store.get_message(message_id.clone()).await?;
+
+    let message = if let Some(existing) = existing {
+        StoredMessage {
+            id: existing.id,
+            session_id: existing.session_id,
+            role,
+            content,
+            token_count: token_count.or(existing.token_count),
+            created_at: existing.created_at,
+            metadata,
+        }
+    } else {
+        StoredMessage {
+            id: message_id,
+            session_id,
+            role,
+            content,
+            token_count,
+            created_at: occurred_at,
+            metadata,
+        }
+    };
+
+    store.append_message(message).await?;
+    Ok(())
+}
+
+fn merge_message_part(
+    existing: Option<StoredMessage>,
+    message_id: String,
+    session_id: String,
+    part_id: String,
+    text: String,
+    occurred_at: TimestampUtc,
+) -> Result<StoredMessage, IngestError> {
+    let mut message = existing.unwrap_or(StoredMessage {
+        id: message_id,
+        session_id,
+        role: "assistant".to_string(),
+        content: String::new(),
+        token_count: None,
+        created_at: occurred_at,
+        metadata: Value::Object(Default::default()),
+    });
+
+    let metadata = message
+        .metadata
+        .as_object_mut()
+        .ok_or(IngestError::InvalidEvent("message metadata is not an object"))?;
+
+    {
+        let part_order = metadata
+            .entry("part_order".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let part_order = part_order
+            .as_array_mut()
+            .ok_or(IngestError::InvalidEvent("message part_order is not an array"))?;
+
+        let seen_part = part_order
+            .iter()
+            .any(|value| value.as_str().is_some_and(|value| value == part_id));
+        if !seen_part {
+            part_order.push(Value::String(part_id.clone()));
+        }
+    }
+
+    {
+        let parts = metadata
+            .entry("parts".to_string())
+            .or_insert_with(|| Value::Object(Default::default()));
+        let parts = parts
+            .as_object_mut()
+            .ok_or(IngestError::InvalidEvent("message parts is not an object"))?;
+        parts.insert(part_id.clone(), Value::String(text));
+    }
+
+    let part_order = metadata
+        .get("part_order")
+        .and_then(Value::as_array)
+        .ok_or(IngestError::InvalidEvent("message part_order is not an array"))?;
+    let parts = metadata
+        .get("parts")
+        .and_then(Value::as_object)
+        .ok_or(IngestError::InvalidEvent("message parts is not an object"))?;
+    let content = part_order
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|part_id| parts.get(part_id))
+        .filter_map(Value::as_str)
+        .collect::<String>();
+
+    message.content = content;
+    Ok(message)
 }
 
 #[async_trait::async_trait]
@@ -129,16 +238,16 @@ pub trait Ingest {
             EventPayload::MessageUpdated(payload) => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
                 if let Some(content) = payload.content {
-                    self.store()
-                        .append_message(StoredMessage {
-                            id: payload.message_id,
-                            session_id: session.id,
-                            role: payload.role,
-                            content,
-                            token_count: payload.token_count,
-                            created_at: occurred_at,
-                            metadata: serde_json::Value::Object(Default::default()),
-                        })
+                    upsert_message_content(
+                        self.store(),
+                        payload.message_id,
+                        session.id,
+                        payload.role,
+                        content,
+                        payload.token_count,
+                        occurred_at,
+                        serde_json::Value::Object(Default::default()),
+                    )
                         .await?;
                 }
             }
@@ -147,17 +256,16 @@ pub trait Ingest {
                 if payload.part_type == "text"
                     && let Some(content) = payload.text
                 {
-                    self.store()
-                        .append_message(StoredMessage {
-                            id: payload.message_id,
-                            session_id: session.id,
-                            role: "assistant".to_string(),
-                            content,
-                            token_count: None,
-                            created_at: occurred_at,
-                            metadata: serde_json::json!({"part_id": payload.part_id}),
-                        })
-                        .await?;
+                    let existing = self.store().get_message(payload.message_id.clone()).await?;
+                    let message = merge_message_part(
+                        existing,
+                        payload.message_id,
+                        session.id,
+                        payload.part_id,
+                        content,
+                        occurred_at,
+                    )?;
+                    self.store().append_message(message).await?;
                 }
             }
             EventPayload::ToolExecuteBefore(payload) => {

@@ -212,6 +212,96 @@ async fn ingest_events_persists_surreal_records() {
 }
 
 #[tokio::test]
+async fn ingest_events_merge_streamed_message_parts() {
+    let (_temp_dir, store) = test_store().await;
+    let state = AppState {
+        store: store.clone(),
+    };
+    let server = TestServer::new(build_router(state));
+
+    let request_id = Uuid::new_v4();
+    let project = test_project();
+    let session = test_session();
+    let source = test_source();
+    let occurred_at = chrono::DateTime::UNIX_EPOCH;
+
+    let response: TestResponse = server
+        .post("/v1/events")
+        .msgpack(&IngestEventsRequest {
+            request_id,
+            events: vec![
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project: project.clone(),
+                    session: Some(session.clone()),
+                    source: source.clone(),
+                    payload: EventPayload::SessionCreated,
+                },
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project: project.clone(),
+                    session: Some(session.clone()),
+                    source: source.clone(),
+                    payload: EventPayload::MessagePartUpdated(MessagePartUpdatedPayload {
+                        message_id: "message-2".to_string(),
+                        part_id: "part-1".to_string(),
+                        part_type: "text".to_string(),
+                        text: Some("Hel".to_string()),
+                    }),
+                },
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project: project.clone(),
+                    session: Some(session.clone()),
+                    source: source.clone(),
+                    payload: EventPayload::MessagePartUpdated(MessagePartUpdatedPayload {
+                        message_id: "message-2".to_string(),
+                        part_id: "part-1".to_string(),
+                        part_type: "text".to_string(),
+                        text: Some("Hello".to_string()),
+                    }),
+                },
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project,
+                    session: Some(session),
+                    source,
+                    payload: EventPayload::MessagePartUpdated(MessagePartUpdatedPayload {
+                        message_id: "message-2".to_string(),
+                        part_id: "part-2".to_string(),
+                        part_type: "text".to_string(),
+                        text: Some(" world".to_string()),
+                    }),
+                },
+            ],
+        })
+        .await;
+
+    response.assert_status(StatusCode::ACCEPTED);
+    let body = response.msgpack::<IngestEventsResponse>();
+    assert_eq!(body.request_id, request_id);
+    assert_eq!(body.accepted, 4);
+    assert_eq!(body.rejected, 0);
+
+    let messages = store
+        .list_messages("session-test".to_string(), None)
+        .await
+        .expect("message listing should succeed");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "message-2");
+    assert_eq!(messages[0].role, "assistant");
+    assert_eq!(messages[0].content, "Hello world");
+}
+
+#[tokio::test]
 async fn list_projects_returns_persisted_projects() {
     let (_temp_dir, store) = test_store().await;
     store

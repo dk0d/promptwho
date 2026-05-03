@@ -604,6 +604,10 @@ impl ConversationStore for SurrealStore {
         self.select_record("sessions", &id).await
     }
 
+    async fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError> {
+        self.select_record("messages", &id).await
+    }
+
     async fn list_sessions(
         &self,
         query: Option<SessionQuery>,

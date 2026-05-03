@@ -275,6 +275,73 @@ async fn conversation_store_round_trips_sessions_and_messages() {
 }
 
 #[tokio::test]
+async fn message_upsert_replaces_existing_message_state_for_same_id() {
+    let (_temp_dir, store) = test_store().await;
+    let started_at = chrono::DateTime::UNIX_EPOCH;
+
+    store
+        .upsert_project(Project {
+            id: "project-a".to_string(),
+            root: "/tmp/project-a".to_string(),
+            name: Some("project-a".to_string()),
+            repository_fingerprint: None,
+            created_at: started_at,
+        })
+        .await
+        .expect("project upsert should succeed");
+
+    store
+        .upsert_session(Session {
+            id: "session-a".to_string(),
+            project_id: "project-a".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-5.4".to_string(),
+            started_on_branch: Some("main".to_string()),
+            started_on_head: Some("abc123".to_string()),
+            started_at,
+            ended_at: None,
+            metadata: json!({"editor": "vscode"}),
+        })
+        .await
+        .expect("session upsert should succeed");
+
+    store
+        .append_message(Message {
+            id: "message-1".to_string(),
+            session_id: "session-a".to_string(),
+            role: "assistant".to_string(),
+            content: "draft".to_string(),
+            token_count: None,
+            created_at: started_at,
+            metadata: json!({"parts": {"part-1": "draft"}, "part_order": ["part-1"]}),
+        })
+        .await
+        .expect("first message upsert should succeed");
+
+    store
+        .append_message(Message {
+            id: "message-1".to_string(),
+            session_id: "session-a".to_string(),
+            role: "assistant".to_string(),
+            content: "final".to_string(),
+            token_count: Some(42),
+            created_at: plus_seconds(started_at, 5),
+            metadata: json!({"parts": {"part-1": "final"}, "part_order": ["part-1"]}),
+        })
+        .await
+        .expect("second message upsert should succeed");
+
+    let messages = store
+        .list_messages("session-a".to_string(), None)
+        .await
+        .expect("message listing should succeed");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, "message-1");
+    assert_eq!(messages[0].content, "final");
+    assert_eq!(messages[0].token_count, Some(42));
+}
+
+#[tokio::test]
 async fn direct_projection_writes_accept_tool_and_git_records() {
     let (_temp_dir, store) = test_store().await;
     let created_at = chrono::DateTime::UNIX_EPOCH;

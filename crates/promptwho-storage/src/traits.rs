@@ -34,6 +34,7 @@ pub trait ConversationStore: Send + Sync {
     ) -> Result<(), StoreError>;
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError>;
+    async fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError>;
     async fn list_sessions(
         &self,
         query: Option<SessionQuery>,
@@ -222,6 +223,10 @@ where
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError> {
         (**self).get_session(id).await
+    }
+
+    async fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError> {
+        (**self).get_message(id).await
     }
 
     async fn list_sessions(
