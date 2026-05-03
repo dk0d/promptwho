@@ -14,21 +14,35 @@ pub trait EventStore: Send + Sync {
     async fn append_event(&self, event: StoredEvent) -> Result<AppendOutcome, StoreError>;
     async fn append_events(&self, events: Vec<StoredEvent>) -> Result<AppendSummary, StoreError>;
     async fn get_event(&self, id: uuid::Uuid) -> Result<Option<StoredEvent>, StoreError>;
-    async fn list_events(&self, query: EventQuery) -> Result<Vec<StoredEvent>, StoreError>;
+    async fn list_events(&self, query: Option<EventQuery>) -> Result<Vec<StoredEvent>, StoreError>;
 }
 
 #[async_trait]
 pub trait ConversationStore: Send + Sync {
     async fn upsert_project(&self, project: Project) -> Result<(), StoreError>;
-    async fn list_projects(&self) -> Result<Vec<Project>, StoreError>;
+    async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError>;
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError>;
     async fn append_message(&self, message: Message) -> Result<(), StoreError>;
     async fn record_tool_call(&self, call: ToolCall) -> Result<(), StoreError>;
-    async fn record_tool_result(&self, result: ToolResult) -> Result<(), StoreError>;
+    async fn complete_tool_call(
+        &self,
+        tool_call_id: ToolCallId,
+        success: bool,
+        output: serde_json::Value,
+        completed_at: promptwho_protocol::TimestampUtc,
+        metadata: serde_json::Value,
+    ) -> Result<(), StoreError>;
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError>;
-    async fn list_sessions(&self, query: SessionQuery) -> Result<Vec<SessionSummary>, StoreError>;
-    async fn list_messages(&self, session_id: SessionId) -> Result<Vec<Message>, StoreError>;
+    async fn list_sessions(
+        &self,
+        query: Option<SessionQuery>,
+    ) -> Result<Vec<SessionSummary>, StoreError>;
+    async fn list_messages(
+        &self,
+        session_id: SessionId,
+        query: Option<MessageQuery>,
+    ) -> Result<Vec<Message>, StoreError>;
 }
 
 #[async_trait]
@@ -45,14 +59,19 @@ pub trait GitStore: Send + Sync {
     async fn list_commits_for_project(
         &self,
         project_id: ProjectId,
-        query: CommitQuery,
+        query: Option<CommitQuery>,
     ) -> Result<Vec<GitCommit>, StoreError>;
     async fn list_file_history(
         &self,
         project_id: ProjectId,
         path: &str,
+        query: Option<FileHistoryQuery>,
     ) -> Result<Vec<GitFileHistoryRow>, StoreError>;
-    async fn list_commit_hunks(&self, oid: GitOid) -> Result<Vec<GitCommitHunk>, StoreError>;
+    async fn list_commit_hunks(
+        &self,
+        oid: GitOid,
+        query: Option<CommitHunkQuery>,
+    ) -> Result<Vec<GitCommitHunk>, StoreError>;
 }
 
 #[async_trait]
@@ -62,7 +81,11 @@ pub trait TraceStore: Send + Sync {
     async fn write_code_locations(&self, locations: Vec<CodeLocation>) -> Result<(), StoreError>;
 
     async fn get_trace(&self, trace_id: &str) -> Result<Option<ExecutionTrace>, StoreError>;
-    async fn list_trace_frames(&self, trace_id: &str) -> Result<Vec<TraceFrame>, StoreError>;
+    async fn list_trace_frames(
+        &self,
+        trace_id: &str,
+        query: Option<TraceFrameQuery>,
+    ) -> Result<Vec<TraceFrame>, StoreError>;
     async fn find_code_locations(
         &self,
         query: TraceLinkQuery,
@@ -79,6 +102,7 @@ pub trait ChangeStore: Send + Sync {
     async fn list_session_change_hunks(
         &self,
         session_id: SessionId,
+        query: Option<SessionChangeHunkQuery>,
     ) -> Result<Vec<SessionChangeHunk>, StoreError>;
 }
 
@@ -87,10 +111,6 @@ pub trait AttributionStore: Send + Sync {
     async fn write_patch_attributions(
         &self,
         attributions: Vec<PatchAttribution>,
-    ) -> Result<(), StoreError>;
-    async fn write_commit_session_summaries(
-        &self,
-        summaries: Vec<CommitSessionSummary>,
     ) -> Result<(), StoreError>;
     async fn find_patch_attributions(
         &self,
@@ -157,7 +177,7 @@ where
         (**self).get_event(id).await
     }
 
-    async fn list_events(&self, query: EventQuery) -> Result<Vec<StoredEvent>, StoreError> {
+    async fn list_events(&self, query: Option<EventQuery>) -> Result<Vec<StoredEvent>, StoreError> {
         (**self).list_events(query).await
     }
 }
@@ -171,8 +191,8 @@ where
         (**self).upsert_project(project).await
     }
 
-    async fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
-        (**self).list_projects().await
+    async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError> {
+        (**self).list_projects(query).await
     }
 
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError> {
@@ -187,20 +207,36 @@ where
         (**self).record_tool_call(call).await
     }
 
-    async fn record_tool_result(&self, result: ToolResult) -> Result<(), StoreError> {
-        (**self).record_tool_result(result).await
+    async fn complete_tool_call(
+        &self,
+        tool_call_id: ToolCallId,
+        success: bool,
+        output: serde_json::Value,
+        completed_at: promptwho_protocol::TimestampUtc,
+        metadata: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        (**self)
+            .complete_tool_call(tool_call_id, success, output, completed_at, metadata)
+            .await
     }
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError> {
         (**self).get_session(id).await
     }
 
-    async fn list_sessions(&self, query: SessionQuery) -> Result<Vec<SessionSummary>, StoreError> {
+    async fn list_sessions(
+        &self,
+        query: Option<SessionQuery>,
+    ) -> Result<Vec<SessionSummary>, StoreError> {
         (**self).list_sessions(query).await
     }
 
-    async fn list_messages(&self, session_id: SessionId) -> Result<Vec<Message>, StoreError> {
-        (**self).list_messages(session_id).await
+    async fn list_messages(
+        &self,
+        session_id: SessionId,
+        query: Option<MessageQuery>,
+    ) -> Result<Vec<Message>, StoreError> {
+        (**self).list_messages(session_id, query).await
     }
 }
 
@@ -229,7 +265,7 @@ where
     async fn list_commits_for_project(
         &self,
         project_id: ProjectId,
-        query: CommitQuery,
+        query: Option<CommitQuery>,
     ) -> Result<Vec<GitCommit>, StoreError> {
         (**self).list_commits_for_project(project_id, query).await
     }
@@ -238,12 +274,17 @@ where
         &self,
         project_id: ProjectId,
         path: &str,
+        query: Option<FileHistoryQuery>,
     ) -> Result<Vec<GitFileHistoryRow>, StoreError> {
-        (**self).list_file_history(project_id, path).await
+        (**self).list_file_history(project_id, path, query).await
     }
 
-    async fn list_commit_hunks(&self, oid: GitOid) -> Result<Vec<GitCommitHunk>, StoreError> {
-        (**self).list_commit_hunks(oid).await
+    async fn list_commit_hunks(
+        &self,
+        oid: GitOid,
+        query: Option<CommitHunkQuery>,
+    ) -> Result<Vec<GitCommitHunk>, StoreError> {
+        (**self).list_commit_hunks(oid, query).await
     }
 }
 
@@ -268,8 +309,12 @@ where
         (**self).get_trace(trace_id).await
     }
 
-    async fn list_trace_frames(&self, trace_id: &str) -> Result<Vec<TraceFrame>, StoreError> {
-        (**self).list_trace_frames(trace_id).await
+    async fn list_trace_frames(
+        &self,
+        trace_id: &str,
+        query: Option<TraceFrameQuery>,
+    ) -> Result<Vec<TraceFrame>, StoreError> {
+        (**self).list_trace_frames(trace_id, query).await
     }
 
     async fn find_code_locations(
@@ -296,8 +341,9 @@ where
     async fn list_session_change_hunks(
         &self,
         session_id: SessionId,
+        query: Option<SessionChangeHunkQuery>,
     ) -> Result<Vec<SessionChangeHunk>, StoreError> {
-        (**self).list_session_change_hunks(session_id).await
+        (**self).list_session_change_hunks(session_id, query).await
     }
 }
 
@@ -311,13 +357,6 @@ where
         attributions: Vec<PatchAttribution>,
     ) -> Result<(), StoreError> {
         (**self).write_patch_attributions(attributions).await
-    }
-
-    async fn write_commit_session_summaries(
-        &self,
-        summaries: Vec<CommitSessionSummary>,
-    ) -> Result<(), StoreError> {
-        (**self).write_commit_session_summaries(summaries).await
     }
 
     async fn find_patch_attributions(
