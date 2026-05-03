@@ -324,6 +324,24 @@ impl SurrealStore {
             "surreal storage methods are scaffolded but not yet implemented".to_string(),
         ))
     }
+
+    fn project_record_key(project_id: &str) -> &str {
+        project_id.strip_prefix("project:").unwrap_or(project_id)
+    }
+
+    async fn get_project_by_canonical_id(
+        &self,
+        project_id: String,
+    ) -> Result<Option<Project>, StoreError> {
+        let mut projects = self
+            .list_projects(Some(ProjectQuery {
+                id: Some(project_id),
+                limit: Some(1),
+                ..Default::default()
+            }))
+            .await?;
+        Ok(projects.pop())
+    }
 }
 
 async fn filter_patch_attributions_by_commit(
@@ -541,16 +559,30 @@ impl EventStore for SurrealStore {
 impl ConversationStore for SurrealStore {
     async fn upsert_project(&self, project: Project) -> Result<Project, StoreError> {
         let project_id = project.id.clone();
-        self.upsert_record(PROJECT_TABLE, &project_id, project).await?;
-        self.select_record(PROJECT_TABLE, &project_id)
+        let record_key = if Self::project_record_key(&project_id) != project_id
+            && self
+                .select_record::<Project>(PROJECT_TABLE, &project_id)
+                .await?
+                .is_some()
+        {
+            project_id.as_str()
+        } else {
+            Self::project_record_key(&project_id)
+        };
+
+        self.upsert_record(PROJECT_TABLE, record_key, project).await?;
+        self.get_project_by_canonical_id(project_id.clone())
             .await?
             .ok_or_else(|| StoreError::Message(format!("project not found after upsert: {project_id}")))
     }
 
     async fn create_project(&self, mut project: Project) -> Result<Project, StoreError> {
-        project.id = format!("project:{}", Uuid::new_v4());
+        if project.id.is_empty() {
+            project.id = format!("project:{}", Uuid::new_v4());
+        }
         let project_id = project.id.clone();
-        self.create_record(PROJECT_TABLE, &project_id, project).await
+        self.create_record(PROJECT_TABLE, Self::project_record_key(&project_id), project)
+            .await
     }
 
     async fn get_project_by_fingerprint(
@@ -580,7 +612,7 @@ impl ConversationStore for SurrealStore {
             return Ok(None);
         };
 
-        self.select_record(PROJECT_TABLE, &mapping.pid).await
+        self.get_project_by_canonical_id(mapping.pid).await
     }
 
     async fn upsert_project_foreign_id(
