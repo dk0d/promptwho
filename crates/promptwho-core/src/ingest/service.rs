@@ -1,7 +1,7 @@
 use promptwho_protocol::{EventEnvelope, EventPayload};
 use promptwho_storage::{
-    AppendOutcome, GitSnapshot, Message as StoredMessage, Project, Session, StoreError,
-    StoredEvent, ToolCall, ToolResult,
+    AppendOutcome, GitCommit, GitCommitFile, GitCommitHunk, GitSnapshot, Message as StoredMessage,
+    Project, ProjectQuery, Session, StoreError, StoredEvent, ToolCall,
 };
 use promptwho_storage::{ConversationStore, EventStore, GitStore};
 use serde_json::json;
@@ -66,39 +66,56 @@ pub trait Ingest {
                 id: envelope.project.id.clone(),
                 root: envelope.project.root.clone(),
                 name: envelope.project.name.clone(),
+                repository_fingerprint: envelope.project.repository_fingerprint.clone(),
                 created_at: occurred_at,
             })
             .await?;
 
         match envelope.payload {
-            EventPayload::SessionStarted(payload) => {
+            EventPayload::SessionCreated => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
                 self.store()
                     .upsert_session(Session {
                         id: session.id,
                         project_id: envelope.project.id,
-                        provider: payload.provider,
-                        model: payload.model,
-                        branch: payload.branch,
-                        head_commit: payload.head_commit,
+                        provider: "unknown".to_string(),
+                        model: "unknown".to_string(),
+                        started_on_branch: None,
+                        started_on_head: None,
                         started_at: occurred_at,
                         ended_at: None,
-                        metadata: payload.metadata,
+                        metadata: serde_json::Value::Object(Default::default()),
                     })
                     .await?;
             }
-            EventPayload::SessionEnded(payload) => {
+            EventPayload::SessionUpdated => {
+                let session = envelope.session.ok_or(IngestError::MissingSession)?;
+                self.store()
+                    .upsert_session(Session {
+                        id: session.id,
+                        project_id: envelope.project.id,
+                        provider: "unknown".to_string(),
+                        model: "unknown".to_string(),
+                        started_on_branch: None,
+                        started_on_head: None,
+                        started_at: occurred_at,
+                        ended_at: None,
+                        metadata: serde_json::Value::Object(Default::default()),
+                    })
+                    .await?;
+            }
+            EventPayload::SessionDeleted => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
                 let session = Session {
                     id: session.id,
                     project_id: envelope.project.id,
                     provider: "unknown".to_string(),
                     model: "unknown".to_string(),
-                    branch: None,
-                    head_commit: None,
+                    started_on_branch: None,
+                    started_on_head: None,
                     started_at: occurred_at,
                     ended_at: Some(occurred_at),
-                    metadata: payload.metadata,
+                    metadata: serde_json::Value::Object(Default::default()),
                 };
                 self.store().upsert_session(session).await?;
             }
@@ -109,21 +126,41 @@ pub trait Ingest {
                 );
                 let _ = json!(payload);
             }
-            EventPayload::MessageAdded(payload) => {
+            EventPayload::MessageUpdated(payload) => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
-                self.store()
-                    .append_message(StoredMessage {
-                        id: payload.message_id,
-                        session_id: session.id,
-                        role: payload.role,
-                        content: payload.content,
-                        token_count: payload.token_count,
-                        created_at: occurred_at,
-                        metadata: payload.metadata,
-                    })
-                    .await?;
+                if let Some(content) = payload.content {
+                    self.store()
+                        .append_message(StoredMessage {
+                            id: payload.message_id,
+                            session_id: session.id,
+                            role: payload.role,
+                            content,
+                            token_count: payload.token_count,
+                            created_at: occurred_at,
+                            metadata: serde_json::Value::Object(Default::default()),
+                        })
+                        .await?;
+                }
             }
-            EventPayload::ToolCalled(payload) => {
+            EventPayload::MessagePartUpdated(payload) => {
+                let session = envelope.session.ok_or(IngestError::MissingSession)?;
+                if payload.part_type == "text"
+                    && let Some(content) = payload.text
+                {
+                    self.store()
+                        .append_message(StoredMessage {
+                            id: payload.message_id,
+                            session_id: session.id,
+                            role: "assistant".to_string(),
+                            content,
+                            token_count: None,
+                            created_at: occurred_at,
+                            metadata: serde_json::json!({"part_id": payload.part_id}),
+                        })
+                        .await?;
+                }
+            }
+            EventPayload::ToolExecuteBefore(payload) => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
                 self.store()
                     .record_tool_call(ToolCall {
@@ -132,20 +169,26 @@ pub trait Ingest {
                         tool_name: payload.tool_name,
                         input: payload.input,
                         created_at: occurred_at,
-                        metadata: payload.metadata,
+                        completed_at: None,
+                        success: None,
+                        output: None,
+                        metadata: serde_json::Value::Object(Default::default()),
                     })
                     .await?;
             }
-            EventPayload::ToolResult(payload) => {
+            EventPayload::ToolExecuteAfter(payload) => {
                 self.store()
-                    .record_tool_result(ToolResult {
-                        tool_call_id: payload.tool_call_id,
-                        success: payload.success,
-                        output: payload.output,
-                        created_at: occurred_at,
-                        metadata: payload.metadata,
-                    })
+                    .complete_tool_call(
+                        payload.tool_call_id,
+                        payload.success,
+                        payload.output,
+                        occurred_at,
+                        serde_json::Value::Object(Default::default()),
+                    )
                     .await?;
+            }
+            EventPayload::FileEdited(_) => {
+                warn!("file edited projection not implemented yet");
             }
             EventPayload::GitSnapshot(payload) => {
                 self.store()
@@ -161,6 +204,96 @@ pub trait Ingest {
                         created_at: occurred_at,
                     })
                     .await?;
+            }
+            EventPayload::GitCommit(payload) => {
+                let commit_oid = payload
+                    .head_commit
+                    .clone()
+                    .ok_or(IngestError::InvalidEvent("git.commit missing head_commit"))?;
+
+                let message = payload.message.clone().unwrap_or_else(|| {
+                    let title = payload.commit_title.clone().unwrap_or_default();
+                    match payload.commit_body.as_deref() {
+                        Some(body) if !body.is_empty() && !title.is_empty() => {
+                            format!("{title}\n\n{body}")
+                        }
+                        Some(body) if !body.is_empty() => body.to_string(),
+                        _ => title,
+                    }
+                });
+
+                self.store()
+                    .record_commit(
+                        GitCommit {
+                            oid: commit_oid.clone(),
+                            project_id: envelope.project.id,
+                            parent_oid: payload.parent_commit,
+                            author_name: payload.commit_author_name,
+                            author_email: payload.commit_author_email,
+                            message,
+                            committed_at: payload.commit_timestamp.unwrap_or(occurred_at),
+                        },
+                        payload
+                            .files
+                            .into_iter()
+                            .map(|file| GitCommitFile {
+                                id: format!("{commit_oid}::{}", file.path),
+                                commit_oid: commit_oid.clone(),
+                                path: file.path,
+                                old_path: file.old_path,
+                                change_kind: file.change_kind,
+                            })
+                            .collect(),
+                        payload
+                            .hunks
+                            .into_iter()
+                            .map(|hunk| GitCommitHunk {
+                                id: hunk.id,
+                                commit_file_id: format!("{commit_oid}::{}", hunk.file_path),
+                                file_path: hunk.file_path,
+                                old_start: hunk.old_start,
+                                old_lines: hunk.old_lines,
+                                new_start: hunk.new_start,
+                                new_lines: hunk.new_lines,
+                                hunk_header: hunk.hunk_header,
+                                added_line_count: hunk.added_line_count,
+                                removed_line_count: hunk.removed_line_count,
+                                context_before_hash: hunk.context_before_hash,
+                                context_after_hash: hunk.context_after_hash,
+                                added_lines_fingerprint: hunk.added_lines_fingerprint,
+                                removed_lines_fingerprint: hunk.removed_lines_fingerprint,
+                            })
+                            .collect(),
+                    )
+                    .await?;
+            }
+            EventPayload::ServerInstanceDisposed(_)
+            | EventPayload::ServerConnected
+            | EventPayload::InstallationUpdated(_)
+            | EventPayload::InstallationUpdateAvailable(_)
+            | EventPayload::LspClientDiagnostics(_)
+            | EventPayload::LspUpdated
+            | EventPayload::MessageRemoved(_)
+            | EventPayload::MessagePartRemoved(_)
+            | EventPayload::PermissionUpdated(_)
+            | EventPayload::PermissionReplied(_)
+            | EventPayload::SessionStatus(_)
+            | EventPayload::SessionIdle
+            | EventPayload::SessionCompacted
+            | EventPayload::TodoUpdated(_)
+            | EventPayload::CommandExecuted(_)
+            | EventPayload::SessionError(_)
+            | EventPayload::FileWatcherUpdated(_)
+            | EventPayload::VcsBranchUpdated(_)
+            | EventPayload::TuiPromptAppend(_)
+            | EventPayload::TuiCommandExecute(_)
+            | EventPayload::TuiToastShow(_)
+            | EventPayload::PtyCreated(_)
+            | EventPayload::PtyUpdated(_)
+            | EventPayload::PtyExited(_)
+            | EventPayload::PtyDeleted(_)
+            | EventPayload::ShellEnv(_) => {
+                warn!(action = %envelope.payload.action(), "projection not implemented yet");
             }
             EventPayload::TraceLinked(payload) => {
                 warn!(trace_id = %payload.trace_id, "trace projection not implemented yet");
@@ -202,6 +335,29 @@ where
         &self,
         envelope: &EventEnvelope,
     ) -> Result<EventEnvelope, IngestError> {
-        Ok(envelope.clone())
+        let Some(repository_fingerprint) = envelope.project.repository_fingerprint.clone() else {
+            return Ok(envelope.clone());
+        };
+
+        let mut normalized = envelope.clone();
+        let existing = self
+            .store
+            .list_projects(Some(ProjectQuery {
+                repository_fingerprint: Some(repository_fingerprint.clone()),
+                limit: Some(1),
+                ..Default::default()
+            }))
+            .await?;
+
+        if let Some(project) = existing.into_iter().next() {
+            normalized.project.id = project.id;
+            normalized.project.root = project.root;
+            normalized.project.name = normalized.project.name.or(project.name);
+            normalized.project.repository_fingerprint = project
+                .repository_fingerprint
+                .or(Some(repository_fingerprint));
+        }
+
+        Ok(normalized)
     }
 }

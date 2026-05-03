@@ -21,6 +21,7 @@ fn test_project() -> ProjectRef {
         id: "project-test".to_string(),
         root: "/tmp/promptwho-test".to_string(),
         name: Some("promptwho-test".to_string()),
+        repository_fingerprint: None,
     }
 }
 
@@ -92,13 +93,7 @@ async fn ingest_events_persists_surreal_records() {
                     project: project.clone(),
                     session: Some(session.clone()),
                     source: source.clone(),
-                    payload: EventPayload::SessionStarted(SessionStartedPayload {
-                        provider: "openai".to_string(),
-                        model: "gpt-5.4".to_string(),
-                        branch: Some("main".to_string()),
-                        head_commit: Some("abc123".to_string()),
-                        metadata: json!({"editor": "vscode"}),
-                    }),
+                    payload: EventPayload::SessionCreated,
                 },
                 EventEnvelope {
                     id: message_added_id,
@@ -107,12 +102,11 @@ async fn ingest_events_persists_surreal_records() {
                     project: project.clone(),
                     session: Some(session.clone()),
                     source: source.clone(),
-                    payload: EventPayload::MessageAdded(MessageAddedPayload {
+                    payload: EventPayload::MessageUpdated(MessageUpdatedPayload {
                         message_id: "message-1".to_string(),
                         role: "user".to_string(),
-                        content: "hello from axum_test".to_string(),
+                        content: Some("hello from axum_test".to_string()),
                         token_count: Some(12),
-                        metadata: json!({"kind": "prompt"}),
                     }),
                 },
                 EventEnvelope {
@@ -122,11 +116,10 @@ async fn ingest_events_persists_surreal_records() {
                     project: project.clone(),
                     session: Some(session.clone()),
                     source: source.clone(),
-                    payload: EventPayload::ToolCalled(ToolCalledPayload {
+                    payload: EventPayload::ToolExecuteBefore(ToolExecuteBeforePayload {
                         tool_call_id: "tool-call-1".to_string(),
                         tool_name: "bash".to_string(),
                         input: json!({"command": "git status"}),
-                        metadata: json!({"source": "test"}),
                     }),
                 },
                 EventEnvelope {
@@ -136,11 +129,11 @@ async fn ingest_events_persists_surreal_records() {
                     project: project.clone(),
                     session: Some(session.clone()),
                     source: source.clone(),
-                    payload: EventPayload::ToolResult(ToolResultPayload {
+                    payload: EventPayload::ToolExecuteAfter(ToolExecuteAfterPayload {
                         tool_call_id: "tool-call-1".to_string(),
+                        tool_name: "bash".to_string(),
                         success: true,
                         output: json!({"stdout": "On branch main"}),
-                        metadata: json!({"exit_code": 0}),
                     }),
                 },
                 EventEnvelope {
@@ -174,18 +167,26 @@ async fn ingest_events_persists_surreal_records() {
         .expect("event lookup should succeed")
         .expect("session started event should exist");
     assert_eq!(stored_event.project_id, project.id);
-    assert_eq!(stored_event.action, "session.started");
+    assert_eq!(stored_event.action, "session.created");
 
     let all_events = store
-        .list_events(EventQuery {
+        .list_events(Some(EventQuery {
             project_id: Some("project-test".to_string()),
             ..Default::default()
-        })
+        }))
         .await
         .expect("event listing should succeed");
     assert_eq!(all_events.len(), 5);
-    assert!(all_events.iter().any(|event| event.action == "tool.called"));
-    assert!(all_events.iter().any(|event| event.action == "tool.result"));
+    assert!(
+        all_events
+            .iter()
+            .any(|event| event.action == "tool.execute.before")
+    );
+    assert!(
+        all_events
+            .iter()
+            .any(|event| event.action == "tool.execute.after")
+    );
     assert!(
         all_events
             .iter()
@@ -197,12 +198,12 @@ async fn ingest_events_persists_surreal_records() {
         .await
         .expect("session lookup should succeed")
         .expect("session should exist");
-    assert_eq!(stored_session.provider, "openai");
-    assert_eq!(stored_session.model, "gpt-5.4");
-    assert_eq!(stored_session.branch.as_deref(), Some("main"));
+    assert_eq!(stored_session.provider, "unknown");
+    assert_eq!(stored_session.model, "unknown");
+    assert_eq!(stored_session.started_on_branch, None);
 
     let messages = store
-        .list_messages("session-test".to_string())
+        .list_messages("session-test".to_string(), None)
         .await
         .expect("message listing should succeed");
     assert_eq!(messages.len(), 1);
@@ -218,6 +219,7 @@ async fn list_projects_returns_persisted_projects() {
             id: "project-test".to_string(),
             root: "/tmp/promptwho-test".to_string(),
             name: Some("promptwho-test".to_string()),
+            repository_fingerprint: None,
             created_at: chrono::DateTime::UNIX_EPOCH,
         })
         .await

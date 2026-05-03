@@ -1,15 +1,6 @@
 use async_trait::async_trait;
 use promptwho_storage::capabilities::{SupportsSyncMetadata, SupportsVectors};
-use promptwho_storage::{
-    AppendOutcome, AppendSummary, AttributionStore, ChangeStore, CodeLocation,
-    CommitAttributionQuery, CommitQuery, CommitSessionSummary, ConversationStore, EmbeddingRecord,
-    EventQuery, EventStore, ExecutionTrace, GitCommit, GitCommitFile, GitCommitHunk,
-    GitFileHistoryRow, GitOid, GitSnapshot, GitStore, Message, PatchAttribution, Project,
-    ProjectId, SearchResult, SearchResults, SearchStore, Session, SessionChangeHunk,
-    SessionCodeChange, SessionId, SessionQuery, SessionSummary, StoreError, StoredEvent,
-    TextSearchQuery, ToolCall, ToolResult, TraceFrame, TraceLinkQuery, TraceStore, VectorHit,
-    VectorSearchQuery, VectorSearchStore,
-};
+use promptwho_storage::*;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -201,7 +192,6 @@ impl SurrealStore {
                 DEFINE TABLE sessions SCHEMALESS;
                 DEFINE TABLE messages SCHEMALESS;
                 DEFINE TABLE tool_calls SCHEMALESS;
-                DEFINE TABLE tool_results SCHEMALESS;
                 DEFINE TABLE git_snapshots SCHEMALESS;
                 DEFINE TABLE git_commits SCHEMALESS;
                 DEFINE TABLE git_commit_files SCHEMALESS;
@@ -212,21 +202,24 @@ impl SurrealStore {
                 DEFINE TABLE trace_frames SCHEMALESS;
                 DEFINE TABLE code_locations SCHEMALESS;
                 DEFINE TABLE patch_attributions SCHEMALESS;
-                DEFINE TABLE commit_session_summaries SCHEMALESS;
+                DEFINE TABLE embeddings SCHEMALESS;
 
                 DEFINE INDEX raw_events_id ON TABLE raw_events FIELDS id UNIQUE;
                 DEFINE INDEX projects_id ON TABLE projects FIELDS id UNIQUE;
                 DEFINE INDEX sessions_id ON TABLE sessions FIELDS id UNIQUE;
                 DEFINE INDEX messages_id ON TABLE messages FIELDS id UNIQUE;
                 DEFINE INDEX tool_calls_id ON TABLE tool_calls FIELDS id UNIQUE;
+                DEFINE INDEX git_snapshots_id ON TABLE git_snapshots FIELDS id UNIQUE;
                 DEFINE INDEX git_commits_oid ON TABLE git_commits FIELDS oid UNIQUE;
+                DEFINE INDEX git_commit_files_id ON TABLE git_commit_files FIELDS id UNIQUE;
                 DEFINE INDEX git_commit_hunks_id ON TABLE git_commit_hunks FIELDS id UNIQUE;
                 DEFINE INDEX session_code_changes_id ON TABLE session_code_changes FIELDS id UNIQUE;
                 DEFINE INDEX session_change_hunks_id ON TABLE session_change_hunks FIELDS id UNIQUE;
+                DEFINE INDEX execution_traces_trace_id ON TABLE execution_traces FIELDS trace_id UNIQUE;
                 DEFINE INDEX trace_frames_id ON TABLE trace_frames FIELDS id UNIQUE;
                 DEFINE INDEX code_locations_id ON TABLE code_locations FIELDS id UNIQUE;
                 DEFINE INDEX patch_attributions_id ON TABLE patch_attributions FIELDS id UNIQUE;
-                DEFINE INDEX commit_session_summaries_id ON TABLE commit_session_summaries FIELDS id UNIQUE;
+                DEFINE INDEX embeddings_id ON TABLE embeddings FIELDS id UNIQUE;
                 "#,
             )
             .await
@@ -283,8 +276,14 @@ impl SurrealStore {
         Ok(records.into_iter().map(|record| record.0).collect())
     }
 
-    fn table_scoped_id(parts: &[&str]) -> String {
-        parts.join("::")
+    fn offset_from_pagination(pagination: Option<Pagination>) -> Result<Option<u32>, StoreError> {
+        match pagination {
+            None => Ok(None),
+            Some(Pagination::Offset(offset)) => Ok(Some(offset)),
+            Some(Pagination::Cursor(_)) => Err(StoreError::Message(
+                "cursor pagination is not supported by SurrealStore yet".to_string(),
+            )),
+        }
     }
 
     fn todo<T>() -> Result<T, StoreError> {
@@ -292,6 +291,89 @@ impl SurrealStore {
             "surreal storage methods are scaffolded but not yet implemented".to_string(),
         ))
     }
+}
+
+async fn filter_patch_attributions_by_commit(
+    store: &SurrealStore,
+    rows: Vec<PatchAttribution>,
+    commit_oid: &str,
+) -> Result<Vec<PatchAttribution>, StoreError> {
+    let mut filtered = Vec::new();
+
+    for row in rows {
+        let Some(hunk) = store
+            .select_record::<GitCommitHunk>("git_commit_hunks", &row.commit_hunk_id.to_string())
+            .await?
+        else {
+            continue;
+        };
+        let Some(file) = store
+            .select_record::<GitCommitFile>("git_commit_files", &hunk.commit_file_id)
+            .await?
+        else {
+            continue;
+        };
+
+        if file.commit_oid == commit_oid {
+            filtered.push(row);
+        }
+    }
+
+    Ok(filtered)
+}
+
+async fn summarize_patch_attributions(
+    store: &SurrealStore,
+    commit_oid: &str,
+    attributions: Vec<PatchAttribution>,
+) -> Result<Vec<CommitSessionSummary>, StoreError> {
+    let mut by_session = std::collections::BTreeMap::<SessionId, Vec<PatchAttribution>>::new();
+
+    for attribution in attributions {
+        let Some(change_hunk) = store
+            .select_record::<SessionChangeHunk>(
+                "session_change_hunks",
+                &attribution.session_change_hunk_id.to_string(),
+            )
+            .await?
+        else {
+            continue;
+        };
+        let Some(change) = store
+            .select_record::<SessionCodeChange>(
+                "session_code_changes",
+                &change_hunk.change_id.to_string(),
+            )
+            .await?
+        else {
+            continue;
+        };
+
+        by_session
+            .entry(change.session_id)
+            .or_default()
+            .push(attribution);
+    }
+
+    Ok(by_session
+        .into_iter()
+        .map(|(session_id, rows)| {
+            let patch_count = rows.len() as u32;
+            let score = rows.iter().map(|row| row.score).sum::<f32>();
+            let summary = rows
+                .iter()
+                .flat_map(|row| row.reasons.iter().cloned())
+                .collect::<Vec<_>>();
+
+            CommitSessionSummary {
+                commit_oid: commit_oid.to_string(),
+                session_id,
+                patch_count,
+                score,
+                summary,
+            }
+        })
+        .collect())
 }
 
 impl SupportsVectors for SurrealStore {
@@ -351,7 +433,9 @@ impl EventStore for SurrealStore {
         self.select_record("raw_events", &id.to_string()).await
     }
 
-    async fn list_events(&self, query: EventQuery) -> Result<Vec<StoredEvent>, StoreError> {
+    async fn list_events(&self, query: Option<EventQuery>) -> Result<Vec<StoredEvent>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
         let mut conditions = Vec::new();
         let mut bindings = JsonMap::new();
 
@@ -398,6 +482,10 @@ impl EventStore for SurrealStore {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
         }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
 
         self.query_table(&sql, bindings).await
     }
@@ -410,12 +498,69 @@ impl ConversationStore for SurrealStore {
             .await
     }
 
-    async fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
-        self.query_table(
-            "SELECT * FROM projects ORDER BY value.id ASC",
-            JsonMap::new(),
-        )
-        .await
+    async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
+        let mut conditions = Vec::new();
+        let mut bindings = JsonMap::new();
+
+        if let Some(id) = query.id {
+            conditions.push("value.id = $id".to_string());
+            bindings.insert("id".to_string(), JsonValue::String(id));
+        }
+
+        if let Some(root) = query.root {
+            conditions.push("value.root = $root".to_string());
+            bindings.insert("root".to_string(), JsonValue::String(root));
+        }
+
+        if let Some(name) = query.name {
+            conditions.push("value.name = $name".to_string());
+            bindings.insert("name".to_string(), JsonValue::String(name));
+        }
+
+        if let Some(repository_fingerprint) = query.repository_fingerprint {
+            conditions.push("value.repository_fingerprint = $repository_fingerprint".to_string());
+            bindings.insert(
+                "repository_fingerprint".to_string(),
+                JsonValue::String(repository_fingerprint),
+            );
+        }
+
+        if let Some(created_after) = query.created_after {
+            conditions.push("value.created_at >= $created_after".to_string());
+            bindings.insert(
+                "created_after".to_string(),
+                serde_json::to_value(created_after)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        if let Some(created_before) = query.created_before {
+            conditions.push("value.created_at <= $created_before".to_string());
+            bindings.insert(
+                "created_before".to_string(),
+                serde_json::to_value(created_before)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        let mut sql = "SELECT * FROM projects".to_string();
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
+
+        self.query_table(&sql, bindings).await
     }
 
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError> {
@@ -433,22 +578,59 @@ impl ConversationStore for SurrealStore {
             .await
     }
 
-    async fn record_tool_result(&self, result: ToolResult) -> Result<(), StoreError> {
-        self.upsert_record("tool_results", &result.tool_call_id.clone(), result)
-            .await
+    async fn complete_tool_call(
+        &self,
+        tool_call_id: ToolCallId,
+        success: bool,
+        output: JsonValue,
+        completed_at: promptwho_protocol::TimestampUtc,
+        metadata: JsonValue,
+    ) -> Result<(), StoreError> {
+        let Some(mut call) = self.select_record::<ToolCall>("tool_calls", &tool_call_id).await? else {
+            return Err(StoreError::Message(format!(
+                "tool call not found for completion: {tool_call_id}"
+            )));
+        };
+
+        call.success = Some(success);
+        call.output = Some(output);
+        call.completed_at = Some(completed_at);
+        call.metadata = metadata;
+
+        self.upsert_record("tool_calls", &tool_call_id, call).await
     }
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError> {
         self.select_record("sessions", &id).await
     }
 
-    async fn list_sessions(&self, query: SessionQuery) -> Result<Vec<SessionSummary>, StoreError> {
+    async fn list_sessions(
+        &self,
+        query: Option<SessionQuery>,
+    ) -> Result<Vec<SessionSummary>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
         let mut conditions = Vec::new();
         let mut bindings = JsonMap::new();
+
+        if let Some(id) = query.id {
+            conditions.push("value.id = $id".to_string());
+            bindings.insert("id".to_string(), JsonValue::String(id));
+        }
 
         if let Some(project_id) = query.project_id {
             conditions.push("value.project_id = $project_id".to_string());
             bindings.insert("project_id".to_string(), JsonValue::String(project_id));
+        }
+
+        if let Some(provider) = query.provider {
+            conditions.push("value.provider = $provider".to_string());
+            bindings.insert("provider".to_string(), JsonValue::String(provider));
+        }
+
+        if let Some(model) = query.model {
+            conditions.push("value.model = $model".to_string());
+            bindings.insert("model".to_string(), JsonValue::String(model));
         }
 
         if let Some(started_after) = query.started_after {
@@ -479,6 +661,10 @@ impl ConversationStore for SurrealStore {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
         }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
 
         let sessions = self.query_table::<Session>(&sql, bindings).await?;
 
@@ -495,14 +681,53 @@ impl ConversationStore for SurrealStore {
             .collect())
     }
 
-    async fn list_messages(&self, session_id: SessionId) -> Result<Vec<Message>, StoreError> {
+    async fn list_messages(
+        &self,
+        session_id: SessionId,
+        query: Option<MessageQuery>,
+    ) -> Result<Vec<Message>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
+        let mut conditions = vec!["value.session_id = $session_id".to_string()];
         let mut bindings = JsonMap::new();
         bindings.insert("session_id".to_string(), JsonValue::String(session_id));
-        self.query_table(
-            "SELECT * FROM messages WHERE value.session_id = $session_id ORDER BY value.created_at ASC, value.id ASC",
-            bindings,
-        )
-        .await
+
+        if let Some(role) = query.role {
+            conditions.push("value.role = $role".to_string());
+            bindings.insert("role".to_string(), JsonValue::String(role));
+        }
+
+        if let Some(created_after) = query.created_after {
+            conditions.push("value.created_at >= $created_after".to_string());
+            bindings.insert(
+                "created_after".to_string(),
+                serde_json::to_value(created_after)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        if let Some(created_before) = query.created_before {
+            conditions.push("value.created_at <= $created_before".to_string());
+            bindings.insert(
+                "created_before".to_string(),
+                serde_json::to_value(created_before)
+                    .map_err(|err| StoreError::Message(err.to_string()))?,
+            );
+        }
+
+        let mut sql = "SELECT * FROM messages WHERE ".to_string();
+        sql.push_str(&conditions.join(" AND "));
+        sql.push_str(" ORDER BY value.created_at ASC, value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
+
+        self.query_table(&sql, bindings).await
     }
 }
 
@@ -523,8 +748,7 @@ impl GitStore for SurrealStore {
             .await?;
 
         for file in files {
-            let record_id = Self::table_scoped_id(&[file.commit_oid.as_str(), file.path.as_str()]);
-            self.upsert_record("git_commit_files", &record_id, file)
+            self.upsert_record("git_commit_files", &file.id.clone(), file)
                 .await?;
         }
 
@@ -543,11 +767,26 @@ impl GitStore for SurrealStore {
     async fn list_commits_for_project(
         &self,
         project_id: ProjectId,
-        query: CommitQuery,
+        query: Option<CommitQuery>,
     ) -> Result<Vec<GitCommit>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
         let mut conditions = vec!["value.project_id = $project_id".to_string()];
         let mut bindings = JsonMap::new();
         bindings.insert("project_id".to_string(), JsonValue::String(project_id));
+
+        if let Some(oid) = query.oid {
+            conditions.push("value.oid = $oid".to_string());
+            bindings.insert("oid".to_string(), JsonValue::String(oid));
+        }
+
+        if let Some(author_email) = query.author_email {
+            conditions.push("value.author_email = $author_email".to_string());
+            bindings.insert(
+                "author_email".to_string(),
+                JsonValue::String(author_email),
+            );
+        }
 
         if let Some(committed_after) = query.committed_after {
             conditions.push("value.committed_at >= $committed_after".to_string());
@@ -574,6 +813,10 @@ impl GitStore for SurrealStore {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
         }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
 
         self.query_table(&sql, bindings).await
     }
@@ -582,7 +825,10 @@ impl GitStore for SurrealStore {
         &self,
         project_id: ProjectId,
         path: &str,
+        query: Option<FileHistoryQuery>,
     ) -> Result<Vec<GitFileHistoryRow>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
         let mut bindings = JsonMap::new();
         bindings.insert(
             "project_id".to_string(),
@@ -609,33 +855,95 @@ impl GitStore for SurrealStore {
         let commits = self
             .list_commits_for_project(
                 project_id,
-                CommitQuery {
+                Some(CommitQuery {
+                    committed_after: query.committed_after,
+                    committed_before: query.committed_before,
                     limit: None,
                     ..Default::default()
-                },
+                }),
             )
             .await?;
 
-        Ok(commits
+        let filtered_commits = commits
             .into_iter()
             .filter(|commit| commit_oids.contains(&commit.oid))
+            .filter(|commit| {
+                query
+                    .commit_oid
+                    .as_ref()
+                    .map_or(true, |commit_oid| commit.oid == *commit_oid)
+            })
             .map(|commit| GitFileHistoryRow {
                 commit_oid: commit.oid,
                 path: path.to_string(),
                 committed_at: commit.committed_at,
                 message: commit.message,
             })
-            .collect())
+            .collect::<Vec<_>>();
+
+        let offset = offset.unwrap_or(0) as usize;
+        let limit = query.limit.map(|limit| limit as usize);
+
+        Ok(match limit {
+            Some(limit) => filtered_commits.into_iter().skip(offset).take(limit).collect(),
+            None => filtered_commits.into_iter().skip(offset).collect(),
+        })
     }
 
-    async fn list_commit_hunks(&self, oid: GitOid) -> Result<Vec<GitCommitHunk>, StoreError> {
+    async fn list_commit_hunks(
+        &self,
+        oid: GitOid,
+        query: Option<CommitHunkQuery>,
+    ) -> Result<Vec<GitCommitHunk>, StoreError> {
+        let query = query.unwrap_or_default();
+        let offset = Self::offset_from_pagination(query.pagination.clone())?;
+        let mut file_conditions = vec!["value.commit_oid = $oid".to_string()];
         let mut bindings = JsonMap::new();
         bindings.insert("oid".to_string(), JsonValue::String(oid));
-        self.query_table(
-            "SELECT * FROM git_commit_hunks WHERE value.commit_oid = $oid ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC",
-            bindings,
-        )
-        .await
+
+        if let Some(file_path) = query.file_path {
+            file_conditions.push("value.path = $file_path".to_string());
+            bindings.insert("file_path".to_string(), JsonValue::String(file_path));
+        }
+
+        let mut file_sql = "SELECT * FROM git_commit_files WHERE ".to_string();
+        file_sql.push_str(&file_conditions.join(" AND "));
+        file_sql.push_str(" ORDER BY value.path ASC, value.id ASC");
+
+        let files = self.query_table::<GitCommitFile>(&file_sql, bindings.clone()).await?;
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let file_ids = files
+            .into_iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>();
+
+        let mut conditions = vec!["value.commit_file_id INSIDE $commit_file_ids".to_string()];
+        bindings.insert(
+            "commit_file_ids".to_string(),
+            JsonValue::Array(file_ids.into_iter().map(JsonValue::String).collect()),
+        );
+
+        if let Some(hunk_header) = query.hunk_header {
+            conditions.push("value.hunk_header = $hunk_header".to_string());
+            bindings.insert("hunk_header".to_string(), JsonValue::String(hunk_header));
+        }
+
+        let mut sql = "SELECT * FROM git_commit_hunks WHERE ".to_string();
+        sql.push_str(&conditions.join(" AND "));
+        sql.push_str(" ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+        if let Some(offset) = offset {
+            sql.push_str(" START $offset");
+            bindings.insert("offset".to_string(), JsonValue::from(offset));
+        }
+
+        self.query_table(&sql, bindings).await
     }
 }
 
@@ -657,7 +965,11 @@ impl TraceStore for SurrealStore {
         Self::todo()
     }
 
-    async fn list_trace_frames(&self, _trace_id: &str) -> Result<Vec<TraceFrame>, StoreError> {
+    async fn list_trace_frames(
+        &self,
+        _trace_id: &str,
+        _query: Option<TraceFrameQuery>,
+    ) -> Result<Vec<TraceFrame>, StoreError> {
         Self::todo()
     }
 
@@ -682,6 +994,7 @@ impl ChangeStore for SurrealStore {
     async fn list_session_change_hunks(
         &self,
         _session_id: SessionId,
+        _query: Option<SessionChangeHunkQuery>,
     ) -> Result<Vec<SessionChangeHunk>, StoreError> {
         Self::todo()
     }
@@ -691,38 +1004,115 @@ impl ChangeStore for SurrealStore {
 impl AttributionStore for SurrealStore {
     async fn write_patch_attributions(
         &self,
-        _attributions: Vec<PatchAttribution>,
+        attributions: Vec<PatchAttribution>,
     ) -> Result<(), StoreError> {
-        Self::todo()
-    }
+        for attribution in attributions {
+            self.upsert_record("patch_attributions", &attribution.id.to_string(), attribution)
+                .await?;
+        }
 
-    async fn write_commit_session_summaries(
-        &self,
-        _summaries: Vec<CommitSessionSummary>,
-    ) -> Result<(), StoreError> {
-        Self::todo()
+        Ok(())
     }
 
     async fn find_patch_attributions(
         &self,
-        _query: CommitAttributionQuery,
+        query: CommitAttributionQuery,
     ) -> Result<Vec<PatchAttribution>, StoreError> {
-        Self::todo()
+        let mut conditions = Vec::new();
+        let mut bindings = JsonMap::new();
+
+        if let Some(minimum_score) = query.minimum_score {
+            conditions.push("value.score >= $minimum_score".to_string());
+            bindings.insert("minimum_score".to_string(), JsonValue::from(minimum_score));
+        }
+
+        if let Some(session_id) = query.session_id {
+            let sql = r#"
+                SELECT patch.value AS value
+                FROM patch_attributions patch
+                WHERE patch.value.session_change_hunk_id INSIDE (
+                    SELECT VALUE value.id FROM session_change_hunks
+                    WHERE value.change_id INSIDE (
+                        SELECT VALUE value.id FROM session_code_changes WHERE value.session_id = $session_id
+                    )
+                )
+            "#;
+
+            let mut rows = self.query_table::<PatchAttribution>(sql, {
+                let mut scoped = bindings.clone();
+                scoped.insert("session_id".to_string(), JsonValue::String(session_id));
+                scoped
+            })
+            .await?;
+
+            if let Some(commit_oid) = query.commit_oid {
+                rows = filter_patch_attributions_by_commit(self, rows, &commit_oid).await?;
+            }
+
+            if query.limit.is_some() {
+                rows.truncate(query.limit.unwrap() as usize);
+            }
+
+            return Ok(rows);
+        }
+
+        let mut sql = "SELECT * FROM patch_attributions".to_string();
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY value.created_at DESC, value.id ASC");
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT $limit");
+            bindings.insert("limit".to_string(), JsonValue::from(limit));
+        }
+
+        let rows = self.query_table::<PatchAttribution>(&sql, bindings).await?;
+        match query.commit_oid {
+            Some(commit_oid) => filter_patch_attributions_by_commit(self, rows, &commit_oid).await,
+            None => Ok(rows),
+        }
     }
 
     async fn find_commit_contributors(
         &self,
-        _oid: GitOid,
+        oid: GitOid,
     ) -> Result<Vec<CommitSessionSummary>, StoreError> {
-        Self::todo()
+        let attributions = self
+            .find_patch_attributions(CommitAttributionQuery {
+                commit_oid: Some(oid.clone()),
+                limit: None,
+                ..Default::default()
+            })
+            .await?;
+
+        summarize_patch_attributions(self, &oid, attributions).await
     }
 
     async fn find_file_contributors(
         &self,
-        _project_id: ProjectId,
-        _path: &str,
+        project_id: ProjectId,
+        path: &str,
     ) -> Result<Vec<CommitSessionSummary>, StoreError> {
-        Self::todo()
+        let history = self.list_file_history(project_id, path, None).await?;
+        let mut summaries = Vec::new();
+
+        for row in history {
+            summaries.extend(self.find_commit_contributors(row.commit_oid).await?);
+        }
+
+        summaries.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        summaries.dedup_by(|left, right| {
+            left.commit_oid == right.commit_oid && left.session_id == right.session_id
+        });
+
+        Ok(summaries)
     }
 }
 
@@ -767,7 +1157,7 @@ impl SearchStore for SurrealStore {
                 session.project_id,
                 session.provider,
                 session.model,
-                session.branch.as_deref().unwrap_or_default()
+                session.started_on_branch.as_deref().unwrap_or_default()
             )
             .to_lowercase();
 
@@ -782,7 +1172,7 @@ impl SearchStore for SurrealStore {
                             .get(&session.project_id)
                             .and_then(|name| name.as_deref())
                             .unwrap_or(session.project_id.as_str()),
-                        session.branch.as_deref().unwrap_or("-"),
+                        session.started_on_branch.as_deref().unwrap_or("-"),
                         session.started_at,
                     )),
                     score: 1.0,
@@ -830,11 +1220,11 @@ impl SearchStore for SurrealStore {
         }
 
         for event in self
-            .list_events(EventQuery {
+            .list_events(Some(EventQuery {
                 project_id: query.project_id.clone(),
                 limit: None,
                 ..Default::default()
-            })
+            }))
             .await?
         {
             let event_text = serde_json::to_string(&event.envelope)

@@ -9,6 +9,7 @@ pub type SessionId = String;
 pub type MessageId = String;
 pub type ToolCallId = String;
 pub type GitOid = String;
+pub type GitCommitFileId = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEvent {
@@ -37,6 +38,7 @@ pub struct Project {
     pub id: ProjectId,
     pub root: String,
     pub name: Option<String>,
+    pub repository_fingerprint: Option<String>,
     pub created_at: TimestampUtc,
 }
 
@@ -46,8 +48,8 @@ pub struct Session {
     pub project_id: ProjectId,
     pub provider: String,
     pub model: String,
-    pub branch: Option<String>,
-    pub head_commit: Option<String>,
+    pub started_on_branch: Option<String>,
+    pub started_on_head: Option<String>,
     pub started_at: TimestampUtc,
     pub ended_at: Option<TimestampUtc>,
     pub metadata: Value,
@@ -81,15 +83,9 @@ pub struct ToolCall {
     pub tool_name: String,
     pub input: Value,
     pub created_at: TimestampUtc,
-    pub metadata: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub tool_call_id: ToolCallId,
-    pub success: bool,
-    pub output: Value,
-    pub created_at: TimestampUtc,
+    pub completed_at: Option<TimestampUtc>,
+    pub success: Option<bool>,
+    pub output: Option<Value>,
     pub metadata: Value,
 }
 
@@ -119,17 +115,17 @@ pub struct GitCommit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommitFile {
+    pub id: GitCommitFileId,
     pub commit_oid: GitOid,
     pub path: String,
     pub old_path: Option<String>,
     pub change_kind: String,
-    pub hunk_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommitHunk {
     pub id: Uuid,
-    pub commit_oid: GitOid,
+    pub commit_file_id: GitCommitFileId,
     pub file_path: String,
     pub old_start: u32,
     pub old_lines: u32,
@@ -167,8 +163,6 @@ pub struct SessionCodeChange {
 pub struct SessionChangeHunk {
     pub id: Uuid,
     pub change_id: Uuid,
-    pub session_id: SessionId,
-    pub project_id: ProjectId,
     pub file_path: String,
     pub base_commit_oid: Option<GitOid>,
     pub old_start: Option<u32>,
@@ -180,7 +174,6 @@ pub struct SessionChangeHunk {
     pub removed_line_count: u32,
     pub added_lines_fingerprint: Option<String>,
     pub removed_lines_fingerprint: Option<String>,
-    pub captured_at: TimestampUtc,
     pub metadata: Value,
 }
 
@@ -226,10 +219,7 @@ pub struct CodeLocation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchAttribution {
     pub id: Uuid,
-    pub project_id: ProjectId,
-    pub commit_oid: GitOid,
     pub commit_hunk_id: Uuid,
-    pub session_id: SessionId,
     pub session_change_hunk_id: Uuid,
     pub score: f32,
     pub algorithm_version: String,
@@ -239,14 +229,11 @@ pub struct PatchAttribution {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitSessionSummary {
-    pub id: Uuid,
-    pub project_id: ProjectId,
     pub commit_oid: GitOid,
     pub session_id: SessionId,
     pub patch_count: u32,
     pub score: f32,
     pub summary: Vec<String>,
-    pub created_at: TimestampUtc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,12 +1,5 @@
-use promptwho_protocol::{
-    EventEnvelope, EventPayload, GitSnapshotPayload, MessageAddedPayload, PluginSource, ProjectRef,
-    ProtocolVersion, SessionRef, SessionStartedPayload, TimestampUtc,
-};
-use promptwho_storage::{
-    ConversationStore, EventQuery, EventStore, GitCommit, GitCommitFile, GitCommitHunk,
-    GitSnapshot, GitStore, Message, Project, Session, SessionQuery, StoredEvent, ToolCall,
-    ToolResult,
-};
+use promptwho_protocol::*;
+use promptwho_storage::*;
 use promptwho_storage_surreal::{SurrealConfig, SurrealStore};
 use serde_json::json;
 use tempfile::TempDir;
@@ -22,6 +15,7 @@ fn test_project_ref() -> ProjectRef {
         id: "project-a".to_string(),
         root: "/tmp/project-a".to_string(),
         name: Some("project-a".to_string()),
+        repository_fingerprint: None,
     }
 }
 
@@ -82,17 +76,17 @@ fn stored_event(
                 id: project_id.to_string(),
                 root: format!("/tmp/{project_id}"),
                 name: Some(project_id.to_string()),
+                repository_fingerprint: None,
             },
             session: session_id.map(|session_id| SessionRef {
                 id: session_id.to_string(),
             }),
             source: test_source(),
-            payload: EventPayload::MessageAdded(MessageAddedPayload {
+            payload: EventPayload::MessageUpdated(MessageUpdatedPayload {
                 message_id: format!("message-{id}"),
                 role: "user".to_string(),
-                content: format!("event {action}"),
+                content: Some(format!("event {action}")),
                 token_count: Some(1),
-                metadata: json!({}),
             }),
         },
         ingested_at: plus_seconds(occurred_at, 1),
@@ -107,14 +101,14 @@ async fn event_store_round_trips_and_filters_events() {
     let session_event = stored_event(
         Uuid::new_v4(),
         now,
-        "message.added",
+        "message.updated",
         "project-a",
         Some("session-a"),
     );
     let other_project_event = stored_event(
         Uuid::new_v4(),
         plus_seconds(now, 10),
-        "tool.called",
+        "tool.execute.before",
         "project-b",
         Some("session-b"),
     );
@@ -135,24 +129,25 @@ async fn event_store_round_trips_and_filters_events() {
     assert_eq!(fetched.project_id, "project-a");
 
     let filtered = store
-        .list_events(EventQuery {
+        .list_events(Some(EventQuery {
             project_id: Some("project-a".to_string()),
             session_id: Some("session-a".to_string()),
-            action: Some("message.added".to_string()),
+            action: Some("message.updated".to_string()),
             occurred_after: Some(plus_seconds(now, -1)),
             occurred_before: Some(plus_seconds(now, 1)),
             limit: Some(10),
-        })
+            ..Default::default()
+        }))
         .await
         .expect("filtered event listing should succeed");
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].id, session_event.id);
 
     let limited = store
-        .list_events(EventQuery {
+        .list_events(Some(EventQuery {
             limit: Some(1),
             ..Default::default()
-        })
+        }))
         .await
         .expect("limited event listing should succeed");
     assert_eq!(limited.len(), 1);
@@ -166,7 +161,7 @@ async fn event_store_treats_duplicate_event_ids_as_skipped() {
     let event = stored_event(
         Uuid::new_v4(),
         now,
-        "message.added",
+        "message.updated",
         "project-a",
         Some("session-a"),
     );
@@ -184,7 +179,7 @@ async fn event_store_treats_duplicate_event_ids_as_skipped() {
     assert!(!second.inserted);
 
     let events = store
-        .list_events(EventQuery::default())
+        .list_events(None)
         .await
         .expect("event listing should succeed");
     assert_eq!(events.len(), 1);
@@ -201,6 +196,7 @@ async fn conversation_store_round_trips_sessions_and_messages() {
             id: "project-a".to_string(),
             root: "/tmp/project-a".to_string(),
             name: Some("project-a".to_string()),
+            repository_fingerprint: None,
             created_at: started_at,
         })
         .await
@@ -212,8 +208,8 @@ async fn conversation_store_round_trips_sessions_and_messages() {
             project_id: "project-a".to_string(),
             provider: "openai".to_string(),
             model: "gpt-5.4".to_string(),
-            branch: Some("main".to_string()),
-            head_commit: Some("abc123".to_string()),
+            started_on_branch: Some("main".to_string()),
+            started_on_head: Some("abc123".to_string()),
             started_at,
             ended_at: None,
             metadata: json!({"editor": "vscode"}),
@@ -253,15 +249,16 @@ async fn conversation_store_round_trips_sessions_and_messages() {
         .expect("session lookup should succeed")
         .expect("session should exist");
     assert_eq!(session.provider, "openai");
-    assert_eq!(session.branch.as_deref(), Some("main"));
+    assert_eq!(session.started_on_branch.as_deref(), Some("main"));
 
     let sessions = store
-        .list_sessions(SessionQuery {
+        .list_sessions(Some(SessionQuery {
             project_id: Some("project-a".to_string()),
             started_after: Some(plus_seconds(started_at, -1)),
             started_before: Some(plus_seconds(started_at, 1)),
             limit: Some(10),
-        })
+            ..Default::default()
+        }))
         .await
         .expect("session listing should succeed");
     assert_eq!(sessions.len(), 1);
@@ -269,7 +266,7 @@ async fn conversation_store_round_trips_sessions_and_messages() {
     assert_eq!(sessions[0].model, "gpt-5.4");
 
     let messages = store
-        .list_messages("session-a".to_string())
+        .list_messages("session-a".to_string(), None)
         .await
         .expect("message listing should succeed");
     assert_eq!(messages.len(), 2);
@@ -289,6 +286,7 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
             id: project.id.clone(),
             root: project.root,
             name: project.name,
+            repository_fingerprint: project.repository_fingerprint,
             created_at,
         })
         .await
@@ -300,8 +298,8 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
             project_id: project.id.clone(),
             provider: "openai".to_string(),
             model: "gpt-5.4".to_string(),
-            branch: Some("main".to_string()),
-            head_commit: Some("abc123".to_string()),
+            started_on_branch: Some("main".to_string()),
+            started_on_head: Some("abc123".to_string()),
             started_at: created_at,
             ended_at: None,
             metadata: json!({}),
@@ -316,19 +314,22 @@ async fn direct_projection_writes_accept_tool_and_git_records() {
             tool_name: "bash".to_string(),
             input: json!({"command": "git status"}),
             created_at,
+            completed_at: None,
+            success: None,
+            output: None,
             metadata: json!({"source": "test"}),
         })
         .await
         .expect("tool call record should succeed");
 
     store
-        .record_tool_result(ToolResult {
-            tool_call_id: "tool-call-1".to_string(),
-            success: true,
-            output: json!({"stdout": "clean"}),
-            created_at: plus_seconds(created_at, 1),
-            metadata: json!({"exit_code": 0}),
-        })
+        .complete_tool_call(
+            "tool-call-1".to_string(),
+            true,
+            json!({"stdout": "clean"}),
+            plus_seconds(created_at, 1),
+            json!({"exit_code": 0}),
+        )
         .await
         .expect("tool result record should succeed");
 
@@ -376,24 +377,24 @@ async fn git_store_round_trips_commits_files_and_hunks() {
             },
             vec![
                 GitCommitFile {
+                    id: format!("{commit_oid}::src/lib.rs"),
                     commit_oid: commit_oid.clone(),
                     path: "src/lib.rs".to_string(),
                     old_path: None,
                     change_kind: "modified".to_string(),
-                    hunk_count: 2,
                 },
                 GitCommitFile {
+                    id: format!("{commit_oid}::src/old.rs"),
                     commit_oid: commit_oid.clone(),
                     path: "src/old.rs".to_string(),
                     old_path: Some("src/older.rs".to_string()),
                     change_kind: "renamed".to_string(),
-                    hunk_count: 0,
                 },
             ],
             vec![
                 GitCommitHunk {
                     id: first_hunk_id,
-                    commit_oid: commit_oid.clone(),
+                    commit_file_id: format!("{commit_oid}::src/lib.rs"),
                     file_path: "src/lib.rs".to_string(),
                     old_start: 10,
                     old_lines: 2,
@@ -409,7 +410,7 @@ async fn git_store_round_trips_commits_files_and_hunks() {
                 },
                 GitCommitHunk {
                     id: second_hunk_id,
-                    commit_oid: commit_oid.clone(),
+                    commit_file_id: format!("{commit_oid}::src/lib.rs"),
                     file_path: "src/lib.rs".to_string(),
                     old_start: 30,
                     old_lines: 1,
@@ -439,11 +440,12 @@ async fn git_store_round_trips_commits_files_and_hunks() {
     let commits = store
         .list_commits_for_project(
             "project-a".to_string(),
-            promptwho_storage::CommitQuery {
+            Some(promptwho_storage::CommitQuery {
                 committed_after: Some(plus_seconds(committed_at, -1)),
                 committed_before: Some(plus_seconds(committed_at, 1)),
                 limit: Some(10),
-            },
+                ..Default::default()
+            }),
         )
         .await
         .expect("commit listing should succeed");
@@ -451,7 +453,7 @@ async fn git_store_round_trips_commits_files_and_hunks() {
     assert_eq!(commits[0].oid, commit_oid);
 
     let hunks = store
-        .list_commit_hunks("abc123".to_string())
+        .list_commit_hunks("abc123".to_string(), None)
         .await
         .expect("commit hunk listing should succeed");
     assert_eq!(hunks.len(), 2);
@@ -459,7 +461,7 @@ async fn git_store_round_trips_commits_files_and_hunks() {
     assert_eq!(hunks[1].id, second_hunk_id);
 
     let history = store
-        .list_file_history("project-a".to_string(), "src/lib.rs")
+        .list_file_history("project-a".to_string(), "src/lib.rs", None)
         .await
         .expect("file history should succeed");
     assert_eq!(history.len(), 1);
@@ -467,7 +469,7 @@ async fn git_store_round_trips_commits_files_and_hunks() {
     assert_eq!(history[0].message, "Implement commit hunk persistence");
 
     let renamed_history = store
-        .list_file_history("project-a".to_string(), "src/older.rs")
+        .list_file_history("project-a".to_string(), "src/older.rs", None)
         .await
         .expect("renamed file history should succeed");
     assert_eq!(renamed_history.len(), 1);
@@ -485,7 +487,7 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
         project_id: "project-a".to_string(),
         session_id: Some("session-a".to_string()),
         occurred_at,
-        action: "session.started".to_string(),
+        action: "session.created".to_string(),
         envelope: EventEnvelope {
             id,
             version: ProtocolVersion::V1,
@@ -493,13 +495,7 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
             project: test_project_ref(),
             session: Some(test_session_ref()),
             source: test_source(),
-            payload: EventPayload::SessionStarted(SessionStartedPayload {
-                provider: "openai".to_string(),
-                model: "gpt-5.4".to_string(),
-                branch: Some("main".to_string()),
-                head_commit: Some("abc123".to_string()),
-                metadata: json!({"editor": "zed"}),
-            }),
+            payload: EventPayload::SessionCreated,
         },
         ingested_at: plus_seconds(occurred_at, 1),
     };
@@ -517,11 +513,7 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
         .expect("event should exist");
 
     match fetched.envelope.payload {
-        EventPayload::SessionStarted(payload) => {
-            assert_eq!(payload.provider, "openai");
-            assert_eq!(payload.model, "gpt-5.4");
-            assert_eq!(payload.branch.as_deref(), Some("main"));
-        }
+        EventPayload::SessionCreated => {}
         payload => panic!("unexpected payload stored: {payload:?}"),
     }
 
@@ -555,10 +547,10 @@ async fn stored_events_can_round_trip_real_protocol_payloads() {
         .expect("git event append should succeed");
 
     let listed = store
-        .list_events(EventQuery {
+        .list_events(Some(EventQuery {
             action: Some("git.snapshot".to_string()),
             ..Default::default()
-        })
+        }))
         .await
         .expect("git event listing should succeed");
     assert_eq!(listed.len(), 1);
