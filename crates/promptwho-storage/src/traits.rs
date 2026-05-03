@@ -19,7 +19,21 @@ pub trait EventStore: Send + Sync {
 
 #[async_trait]
 pub trait ConversationStore: Send + Sync {
-    async fn upsert_project(&self, project: Project) -> Result<(), StoreError>;
+    async fn upsert_project(&self, project: Project) -> Result<Project, StoreError>;
+    async fn create_project(&self, project: Project) -> Result<Project, StoreError>;
+    async fn get_project_by_fingerprint(
+        &self,
+        repository_fingerprint: String,
+    ) -> Result<Option<Project>, StoreError>;
+    async fn get_project_by_foreign_id(
+        &self,
+        source: String,
+        foreign_id: String,
+    ) -> Result<Option<Project>, StoreError>;
+    async fn upsert_project_foreign_id(
+        &self,
+        foreign_id: ProjectForeignId,
+    ) -> Result<ProjectForeignId, StoreError>;
     async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError>;
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError>;
     async fn append_message(&self, message: Message) -> Result<(), StoreError>;
@@ -188,8 +202,36 @@ impl<T> ConversationStore for &T
 where
     T: ConversationStore + Sync,
 {
-    async fn upsert_project(&self, project: Project) -> Result<(), StoreError> {
+    async fn upsert_project(&self, project: Project) -> Result<Project, StoreError> {
         (**self).upsert_project(project).await
+    }
+
+    async fn create_project(&self, project: Project) -> Result<Project, StoreError> {
+        (**self).create_project(project).await
+    }
+
+    async fn get_project_by_fingerprint(
+        &self,
+        repository_fingerprint: String,
+    ) -> Result<Option<Project>, StoreError> {
+        (**self)
+            .get_project_by_fingerprint(repository_fingerprint)
+            .await
+    }
+
+    async fn get_project_by_foreign_id(
+        &self,
+        source: String,
+        foreign_id: String,
+    ) -> Result<Option<Project>, StoreError> {
+        (**self).get_project_by_foreign_id(source, foreign_id).await
+    }
+
+    async fn upsert_project_foreign_id(
+        &self,
+        foreign_id: ProjectForeignId,
+    ) -> Result<ProjectForeignId, StoreError> {
+        (**self).upsert_project_foreign_id(foreign_id).await
     }
 
     async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError> {

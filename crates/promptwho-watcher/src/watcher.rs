@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use gix::{ObjectId, Repository, diff::Options as DiffOptions, prelude::TreeDiffChangeExt};
 use promptwho_protocol::{
     EventEnvelope, EventPayload, GitCommitFilePayload, GitCommitHunkPayload, GitCommitPayload,
-    PluginSource, ProjectRef, ProtocolVersion,
+    PluginSource, ProjectRef, ProjectRefId, ProtocolVersion,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -125,10 +125,12 @@ where
             .clone()
             .unwrap_or_else(|| work_dir.join(DEFAULT_CHECKPOINT_RELATIVE_PATH));
         let project = ProjectRef {
-            id: config
-                .project_id
-                .clone()
-                .unwrap_or_else(|| default_project_id(&work_dir)),
+            id: ProjectRefId::Id {
+                id: config
+                    .project_id
+                    .clone()
+                    .unwrap_or_else(|| default_project_id(&work_dir)),
+            },
             root: work_dir.display().to_string(),
             name: config.project_name.clone().or_else(|| {
                 work_dir
@@ -181,7 +183,7 @@ where
         self.last_seen_head = Some(observation.head_commit.clone());
 
         tracing::debug!(
-            project_id = %self.project.id,
+            project_id = ?self.project.id,
             head_commit = %observation.head_commit,
             branch = observation.branch.as_deref().unwrap_or("detached"),
             file_count = observation.files.len(),

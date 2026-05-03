@@ -12,6 +12,7 @@ use surrealdb::{
     engine::any::{Any, connect},
     opt::auth::Root,
 };
+use uuid::Uuid;
 
 struct Stored<T>(T);
 
@@ -145,6 +146,20 @@ pub struct SurrealStore {
     sync_enabled: bool,
 }
 
+const RAW_EVENT_TABLE: &str = "raw_event";
+const PROJECT_TABLE: &str = "project";
+const PROJECT_FOREIGN_ID_TABLE: &str = "project_foreign_id";
+const SESSION_TABLE: &str = "session";
+const MESSAGE_TABLE: &str = "message";
+const TOOL_CALL_TABLE: &str = "tool_call";
+const GIT_SNAPSHOT_TABLE: &str = "git_snapshot";
+const GIT_COMMIT_TABLE: &str = "git_commit";
+const GIT_COMMIT_FILE_TABLE: &str = "git_commit_file";
+const GIT_COMMIT_HUNK_TABLE: &str = "git_commit_hunk";
+const SESSION_CODE_CHANGE_TABLE: &str = "session_code_change";
+const SESSION_CHANGE_HUNK_TABLE: &str = "session_change_hunk";
+const PATCH_ATTRIBUTION_TABLE: &str = "patch_attribution";
+
 impl SurrealStore {
     pub async fn connect(config: SurrealConfig) -> Result<Self, StoreError> {
         let db: Surreal<Any> = connect(config.endpoint.as_str())
@@ -187,39 +202,41 @@ impl SurrealStore {
         self.db
             .query(
                 r#"
-                DEFINE TABLE raw_events SCHEMALESS;
-                DEFINE TABLE projects SCHEMALESS;
-                DEFINE TABLE sessions SCHEMALESS;
-                DEFINE TABLE messages SCHEMALESS;
-                DEFINE TABLE tool_calls SCHEMALESS;
-                DEFINE TABLE git_snapshots SCHEMALESS;
-                DEFINE TABLE git_commits SCHEMALESS;
-                DEFINE TABLE git_commit_files SCHEMALESS;
-                DEFINE TABLE git_commit_hunks SCHEMALESS;
-                DEFINE TABLE session_code_changes SCHEMALESS;
-                DEFINE TABLE session_change_hunks SCHEMALESS;
-                DEFINE TABLE execution_traces SCHEMALESS;
-                DEFINE TABLE trace_frames SCHEMALESS;
-                DEFINE TABLE code_locations SCHEMALESS;
-                DEFINE TABLE patch_attributions SCHEMALESS;
-                DEFINE TABLE embeddings SCHEMALESS;
+                DEFINE TABLE raw_event SCHEMALESS;
+                DEFINE TABLE project SCHEMALESS;
+                DEFINE TABLE project_foreign_id SCHEMALESS;
+                DEFINE TABLE session SCHEMALESS;
+                DEFINE TABLE message SCHEMALESS;
+                DEFINE TABLE tool_call SCHEMALESS;
+                DEFINE TABLE git_snapshot SCHEMALESS;
+                DEFINE TABLE git_commit SCHEMALESS;
+                DEFINE TABLE git_commit_file SCHEMALESS;
+                DEFINE TABLE git_commit_hunk SCHEMALESS;
+                DEFINE TABLE session_code_change SCHEMALESS;
+                DEFINE TABLE session_change_hunk SCHEMALESS;
+                DEFINE TABLE execution_trace SCHEMALESS;
+                DEFINE TABLE trace_frame SCHEMALESS;
+                DEFINE TABLE code_location SCHEMALESS;
+                DEFINE TABLE patch_attribution SCHEMALESS;
+                DEFINE TABLE embedding SCHEMALESS;
 
-                DEFINE INDEX raw_events_id ON TABLE raw_events FIELDS id UNIQUE;
-                DEFINE INDEX projects_id ON TABLE projects FIELDS id UNIQUE;
-                DEFINE INDEX sessions_id ON TABLE sessions FIELDS id UNIQUE;
-                DEFINE INDEX messages_id ON TABLE messages FIELDS id UNIQUE;
-                DEFINE INDEX tool_calls_id ON TABLE tool_calls FIELDS id UNIQUE;
-                DEFINE INDEX git_snapshots_id ON TABLE git_snapshots FIELDS id UNIQUE;
-                DEFINE INDEX git_commits_oid ON TABLE git_commits FIELDS oid UNIQUE;
-                DEFINE INDEX git_commit_files_id ON TABLE git_commit_files FIELDS id UNIQUE;
-                DEFINE INDEX git_commit_hunks_id ON TABLE git_commit_hunks FIELDS id UNIQUE;
-                DEFINE INDEX session_code_changes_id ON TABLE session_code_changes FIELDS id UNIQUE;
-                DEFINE INDEX session_change_hunks_id ON TABLE session_change_hunks FIELDS id UNIQUE;
-                DEFINE INDEX execution_traces_trace_id ON TABLE execution_traces FIELDS trace_id UNIQUE;
-                DEFINE INDEX trace_frames_id ON TABLE trace_frames FIELDS id UNIQUE;
-                DEFINE INDEX code_locations_id ON TABLE code_locations FIELDS id UNIQUE;
-                DEFINE INDEX patch_attributions_id ON TABLE patch_attributions FIELDS id UNIQUE;
-                DEFINE INDEX embeddings_id ON TABLE embeddings FIELDS id UNIQUE;
+                DEFINE INDEX raw_event_id ON TABLE raw_event FIELDS id UNIQUE;
+                DEFINE INDEX project_id ON TABLE project FIELDS id UNIQUE;
+                DEFINE INDEX project_foreign_id_id ON TABLE project_foreign_id FIELDS id UNIQUE;
+                DEFINE INDEX session_id ON TABLE session FIELDS id UNIQUE;
+                DEFINE INDEX message_id ON TABLE message FIELDS id UNIQUE;
+                DEFINE INDEX tool_call_id ON TABLE tool_call FIELDS id UNIQUE;
+                DEFINE INDEX git_snapshot_id ON TABLE git_snapshot FIELDS id UNIQUE;
+                DEFINE INDEX git_commit_oid ON TABLE git_commit FIELDS oid UNIQUE;
+                DEFINE INDEX git_commit_file_id ON TABLE git_commit_file FIELDS id UNIQUE;
+                DEFINE INDEX git_commit_hunk_id ON TABLE git_commit_hunk FIELDS id UNIQUE;
+                DEFINE INDEX session_code_change_id ON TABLE session_code_change FIELDS id UNIQUE;
+                DEFINE INDEX session_change_hunk_id ON TABLE session_change_hunk FIELDS id UNIQUE;
+                DEFINE INDEX execution_trace_trace_id ON TABLE execution_trace FIELDS trace_id UNIQUE;
+                DEFINE INDEX trace_frame_id ON TABLE trace_frame FIELDS id UNIQUE;
+                DEFINE INDEX code_location_id ON TABLE code_location FIELDS id UNIQUE;
+                DEFINE INDEX patch_attribution_id ON TABLE patch_attribution FIELDS id UNIQUE;
+                DEFINE INDEX embedding_id ON TABLE embedding FIELDS id UNIQUE;
                 "#,
             )
             .await
@@ -240,6 +257,22 @@ impl SurrealStore {
             .map_err(|err| StoreError::Message(err.to_string()))?;
 
         Ok(())
+    }
+
+    async fn create_record<T>(&self, table: &str, id: &str, value: T) -> Result<T, StoreError>
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let created: Option<Stored<T>> = self
+            .db
+            .create((table, id))
+            .content(Stored(value))
+            .await
+            .map_err(|err| StoreError::Message(err.to_string()))?;
+
+        created
+            .map(|record| record.0)
+            .ok_or_else(|| StoreError::Message(format!("failed to create record in {table}: {id}")))
     }
 
     async fn select_record<T>(&self, table: &str, id: &str) -> Result<Option<T>, StoreError>
@@ -302,13 +335,13 @@ async fn filter_patch_attributions_by_commit(
 
     for row in rows {
         let Some(hunk) = store
-            .select_record::<GitCommitHunk>("git_commit_hunks", &row.commit_hunk_id.to_string())
+            .select_record::<GitCommitHunk>(GIT_COMMIT_HUNK_TABLE, &row.commit_hunk_id.to_string())
             .await?
         else {
             continue;
         };
         let Some(file) = store
-            .select_record::<GitCommitFile>("git_commit_files", &hunk.commit_file_id)
+            .select_record::<GitCommitFile>(GIT_COMMIT_FILE_TABLE, &hunk.commit_file_id)
             .await?
         else {
             continue;
@@ -332,7 +365,7 @@ async fn summarize_patch_attributions(
     for attribution in attributions {
         let Some(change_hunk) = store
             .select_record::<SessionChangeHunk>(
-                "session_change_hunks",
+                SESSION_CHANGE_HUNK_TABLE,
                 &attribution.session_change_hunk_id.to_string(),
             )
             .await?
@@ -341,7 +374,7 @@ async fn summarize_patch_attributions(
         };
         let Some(change) = store
             .select_record::<SessionCodeChange>(
-                "session_code_changes",
+                SESSION_CODE_CHANGE_TABLE,
                 &change_hunk.change_id.to_string(),
             )
             .await?
@@ -394,7 +427,7 @@ impl EventStore for SurrealStore {
         let event_id = event.id.to_string();
         let created: Option<Stored<StoredEvent>> = match self
             .db
-            .create(("raw_events", event_id.as_str()))
+            .create((RAW_EVENT_TABLE, event_id.as_str()))
             .content(Stored(event))
             .await
         {
@@ -430,7 +463,7 @@ impl EventStore for SurrealStore {
     }
 
     async fn get_event(&self, id: uuid::Uuid) -> Result<Option<StoredEvent>, StoreError> {
-        self.select_record("raw_events", &id.to_string()).await
+        self.select_record(RAW_EVENT_TABLE, &id.to_string()).await
     }
 
     async fn list_events(&self, query: Option<EventQuery>) -> Result<Vec<StoredEvent>, StoreError> {
@@ -472,7 +505,7 @@ impl EventStore for SurrealStore {
             );
         }
 
-        let mut sql = "SELECT * FROM raw_events".to_string();
+        let mut sql = format!("SELECT * FROM {RAW_EVENT_TABLE}");
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -488,11 +521,9 @@ impl EventStore for SurrealStore {
                 sql.push_str(&format!(" ORDER BY value.{by} DESC"));
             }
             None => {
-                sql.push_str(" ORDER BY value.occurred_at DESC, value.id ASC");
+                sql.push_str(" ORDER BY value.occurred_at ASC, value.id ASC");
             }
         }
-
-        // sql.push_str(" ORDER BY value.occurred_at ASC, value.id ASC");
         if let Some(limit) = query.limit {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
@@ -508,9 +539,62 @@ impl EventStore for SurrealStore {
 
 #[async_trait]
 impl ConversationStore for SurrealStore {
-    async fn upsert_project(&self, project: Project) -> Result<(), StoreError> {
-        self.upsert_record("projects", &project.id.clone(), project)
-            .await
+    async fn upsert_project(&self, project: Project) -> Result<Project, StoreError> {
+        let project_id = project.id.clone();
+        self.upsert_record(PROJECT_TABLE, &project_id, project).await?;
+        self.select_record(PROJECT_TABLE, &project_id)
+            .await?
+            .ok_or_else(|| StoreError::Message(format!("project not found after upsert: {project_id}")))
+    }
+
+    async fn create_project(&self, mut project: Project) -> Result<Project, StoreError> {
+        project.id = format!("project:{}", Uuid::new_v4());
+        let project_id = project.id.clone();
+        self.create_record(PROJECT_TABLE, &project_id, project).await
+    }
+
+    async fn get_project_by_fingerprint(
+        &self,
+        repository_fingerprint: String,
+    ) -> Result<Option<Project>, StoreError> {
+        let mut projects = self
+            .list_projects(Some(ProjectQuery {
+                repository_fingerprint: Some(repository_fingerprint),
+                limit: Some(1),
+                ..Default::default()
+            }))
+            .await?;
+        Ok(projects.pop())
+    }
+
+    async fn get_project_by_foreign_id(
+        &self,
+        source: String,
+        foreign_id: String,
+    ) -> Result<Option<Project>, StoreError> {
+        let foreign_key = format!("{source}:{foreign_id}");
+        let Some(mapping) = self
+            .select_record::<ProjectForeignId>(PROJECT_FOREIGN_ID_TABLE, &foreign_key)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        self.select_record(PROJECT_TABLE, &mapping.pid).await
+    }
+
+    async fn upsert_project_foreign_id(
+        &self,
+        foreign_id: ProjectForeignId,
+    ) -> Result<ProjectForeignId, StoreError> {
+        let foreign_key = format!("{}:{}", foreign_id.source, foreign_id.fid);
+        self.upsert_record(PROJECT_FOREIGN_ID_TABLE, &foreign_key, foreign_id)
+            .await?;
+        self.select_record(PROJECT_FOREIGN_ID_TABLE, &foreign_key)
+            .await?
+            .ok_or_else(|| {
+                StoreError::Message(format!("project foreign id not found after upsert: {foreign_key}"))
+            })
     }
 
     async fn list_projects(&self, query: Option<ProjectQuery>) -> Result<Vec<Project>, StoreError> {
@@ -560,7 +644,7 @@ impl ConversationStore for SurrealStore {
             );
         }
 
-        let mut sql = "SELECT * FROM projects".to_string();
+        let mut sql = format!("SELECT * FROM {PROJECT_TABLE}");
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -579,17 +663,17 @@ impl ConversationStore for SurrealStore {
     }
 
     async fn upsert_session(&self, session: Session) -> Result<(), StoreError> {
-        self.upsert_record("sessions", &session.id.clone(), session)
+        self.upsert_record(SESSION_TABLE, &session.id.clone(), session)
             .await
     }
 
     async fn append_message(&self, message: Message) -> Result<(), StoreError> {
-        self.upsert_record("messages", &message.id.clone(), message)
+        self.upsert_record(MESSAGE_TABLE, &message.id.clone(), message)
             .await
     }
 
     async fn record_tool_call(&self, call: ToolCall) -> Result<(), StoreError> {
-        self.upsert_record("tool_calls", &call.id.clone(), call)
+        self.upsert_record(TOOL_CALL_TABLE, &call.id.clone(), call)
             .await
     }
 
@@ -602,7 +686,7 @@ impl ConversationStore for SurrealStore {
         metadata: JsonValue,
     ) -> Result<(), StoreError> {
         let Some(mut call) = self
-            .select_record::<ToolCall>("tool_calls", &tool_call_id)
+            .select_record::<ToolCall>(TOOL_CALL_TABLE, &tool_call_id)
             .await?
         else {
             return Err(StoreError::Message(format!(
@@ -615,15 +699,16 @@ impl ConversationStore for SurrealStore {
         call.completed_at = Some(completed_at);
         call.metadata = metadata;
 
-        self.upsert_record("tool_calls", &tool_call_id, call).await
+        self.upsert_record(TOOL_CALL_TABLE, &tool_call_id, call)
+            .await
     }
 
     async fn get_session(&self, id: SessionId) -> Result<Option<Session>, StoreError> {
-        self.select_record("sessions", &id).await
+        self.select_record(SESSION_TABLE, &id).await
     }
 
     async fn get_message(&self, id: MessageId) -> Result<Option<Message>, StoreError> {
-        self.select_record("messages", &id).await
+        self.select_record(MESSAGE_TABLE, &id).await
     }
 
     async fn list_sessions(
@@ -673,7 +758,7 @@ impl ConversationStore for SurrealStore {
             );
         }
 
-        let mut sql = "SELECT * FROM sessions".to_string();
+        let mut sql = format!("SELECT * FROM {SESSION_TABLE}");
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -737,7 +822,7 @@ impl ConversationStore for SurrealStore {
             );
         }
 
-        let mut sql = "SELECT * FROM messages WHERE ".to_string();
+        let mut sql = format!("SELECT * FROM {MESSAGE_TABLE} WHERE ");
         sql.push_str(&conditions.join(" AND "));
         sql.push_str(" ORDER BY value.created_at ASC, value.id ASC");
         if let Some(limit) = query.limit {
@@ -756,7 +841,7 @@ impl ConversationStore for SurrealStore {
 #[async_trait]
 impl GitStore for SurrealStore {
     async fn record_git_snapshot(&self, snapshot: GitSnapshot) -> Result<(), StoreError> {
-        self.upsert_record("git_snapshots", &snapshot.id.to_string(), snapshot)
+        self.upsert_record(GIT_SNAPSHOT_TABLE, &snapshot.id.to_string(), snapshot)
             .await
     }
 
@@ -766,16 +851,16 @@ impl GitStore for SurrealStore {
         files: Vec<GitCommitFile>,
         hunks: Vec<GitCommitHunk>,
     ) -> Result<(), StoreError> {
-        self.upsert_record("git_commits", &commit.oid.clone(), commit)
+        self.upsert_record(GIT_COMMIT_TABLE, &commit.oid.clone(), commit)
             .await?;
 
         for file in files {
-            self.upsert_record("git_commit_files", &file.id.clone(), file)
+            self.upsert_record(GIT_COMMIT_FILE_TABLE, &file.id.clone(), file)
                 .await?;
         }
 
         for hunk in hunks {
-            self.upsert_record("git_commit_hunks", &hunk.id.to_string(), hunk)
+            self.upsert_record(GIT_COMMIT_HUNK_TABLE, &hunk.id.to_string(), hunk)
                 .await?;
         }
 
@@ -783,7 +868,7 @@ impl GitStore for SurrealStore {
     }
 
     async fn get_commit(&self, oid: GitOid) -> Result<Option<GitCommit>, StoreError> {
-        self.select_record("git_commits", &oid).await
+        self.select_record(GIT_COMMIT_TABLE, &oid).await
     }
 
     async fn list_commits_for_project(
@@ -825,7 +910,7 @@ impl GitStore for SurrealStore {
             );
         }
 
-        let mut sql = "SELECT * FROM git_commits WHERE ".to_string();
+        let mut sql = format!("SELECT * FROM {GIT_COMMIT_TABLE} WHERE ");
         sql.push_str(&conditions.join(" AND "));
         sql.push_str(" ORDER BY value.committed_at ASC, value.oid ASC");
         if let Some(limit) = query.limit {
@@ -857,7 +942,9 @@ impl GitStore for SurrealStore {
 
         let commit_files = self
             .query_table::<GitCommitFile>(
-                "SELECT * FROM git_commit_files WHERE value.path = $path OR value.old_path = $path ORDER BY value.commit_oid ASC, value.path ASC",
+                &format!(
+                    "SELECT * FROM {GIT_COMMIT_FILE_TABLE} WHERE value.path = $path OR value.old_path = $path ORDER BY value.commit_oid ASC, value.path ASC"
+                ),
                 bindings.clone(),
             )
             .await?;
@@ -890,7 +977,7 @@ impl GitStore for SurrealStore {
                 query
                     .commit_oid
                     .as_ref()
-                    .map_or(true, |commit_oid| commit.oid == *commit_oid)
+                    .is_none_or(|commit_oid| commit.oid == *commit_oid)
             })
             .map(|commit| GitFileHistoryRow {
                 commit_oid: commit.oid,
@@ -929,7 +1016,7 @@ impl GitStore for SurrealStore {
             bindings.insert("file_path".to_string(), JsonValue::String(file_path));
         }
 
-        let mut file_sql = "SELECT * FROM git_commit_files WHERE ".to_string();
+        let mut file_sql = format!("SELECT * FROM {GIT_COMMIT_FILE_TABLE} WHERE ");
         file_sql.push_str(&file_conditions.join(" AND "));
         file_sql.push_str(" ORDER BY value.path ASC, value.id ASC");
 
@@ -953,7 +1040,7 @@ impl GitStore for SurrealStore {
             bindings.insert("hunk_header".to_string(), JsonValue::String(hunk_header));
         }
 
-        let mut sql = "SELECT * FROM git_commit_hunks WHERE ".to_string();
+        let mut sql = format!("SELECT * FROM {GIT_COMMIT_HUNK_TABLE} WHERE ");
         sql.push_str(&conditions.join(" AND "));
         sql.push_str(
             " ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC",
@@ -1032,7 +1119,7 @@ impl AttributionStore for SurrealStore {
     ) -> Result<(), StoreError> {
         for attribution in attributions {
             self.upsert_record(
-                "patch_attributions",
+                PATCH_ATTRIBUTION_TABLE,
                 &attribution.id.to_string(),
                 attribution,
             )
@@ -1057,11 +1144,11 @@ impl AttributionStore for SurrealStore {
         if let Some(session_id) = query.session_id {
             let sql = r#"
                 SELECT patch.value AS value
-                FROM patch_attributions patch
+                FROM patch_attribution patch
                 WHERE patch.value.session_change_hunk_id INSIDE (
-                    SELECT VALUE value.id FROM session_change_hunks
+                    SELECT VALUE value.id FROM session_change_hunk
                     WHERE value.change_id INSIDE (
-                        SELECT VALUE value.id FROM session_code_changes WHERE value.session_id = $session_id
+                        SELECT VALUE value.id FROM session_code_change WHERE value.session_id = $session_id
                     )
                 )
             "#;
@@ -1078,14 +1165,14 @@ impl AttributionStore for SurrealStore {
                 rows = filter_patch_attributions_by_commit(self, rows, &commit_oid).await?;
             }
 
-            if query.limit.is_some() {
-                rows.truncate(query.limit.unwrap() as usize);
+            if let Some(limit) = query.limit {
+                rows.truncate(limit as usize);
             }
 
             return Ok(rows);
         }
 
-        let mut sql = "SELECT * FROM patch_attributions".to_string();
+        let mut sql = format!("SELECT * FROM {PATCH_ATTRIBUTION_TABLE}");
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -1155,7 +1242,7 @@ impl SearchStore for SurrealStore {
 
         let project_name_by_id = self
             .query_table::<Project>(
-                "SELECT * FROM projects ORDER BY value.id ASC",
+                &format!("SELECT * FROM {PROJECT_TABLE} ORDER BY value.id ASC"),
                 JsonMap::new(),
             )
             .await?
@@ -1167,7 +1254,7 @@ impl SearchStore for SurrealStore {
 
         for session in self
             .query_table::<Session>(
-                "SELECT * FROM sessions ORDER BY value.id ASC",
+                &format!("SELECT * FROM {SESSION_TABLE} ORDER BY value.id ASC"),
                 JsonMap::new(),
             )
             .await?
@@ -1211,7 +1298,7 @@ impl SearchStore for SurrealStore {
 
         for message in self
             .query_table::<Message>(
-                "SELECT * FROM messages ORDER BY value.id ASC",
+                &format!("SELECT * FROM {MESSAGE_TABLE} ORDER BY value.id ASC"),
                 JsonMap::new(),
             )
             .await?

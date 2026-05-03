@@ -1,13 +1,14 @@
-use promptwho_protocol::{EventEnvelope, EventPayload};
+use promptwho_protocol::{EventEnvelope, EventPayload, ProjectRefId};
 use promptwho_storage::{
     AppendOutcome, GitCommit, GitCommitFile, GitCommitHunk, GitSnapshot, Message as StoredMessage,
-    Project, ProjectQuery, Session, StoreError, StoredEvent, ToolCall,
+    Project, ProjectForeignId, ProjectQuery, Session, StoreError, StoredEvent, ToolCall,
 };
 use promptwho_storage::{ConversationStore, EventStore, GitStore};
 use serde_json::{Value, json};
 use tracing::warn;
 
 use promptwho_protocol::TimestampUtc;
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -60,6 +61,70 @@ where
     Ok(())
 }
 
+async fn ensure_session_exists<S>(
+    store: &S,
+    envelope: &EventEnvelope,
+    occurred_at: TimestampUtc,
+) -> Result<(), IngestError>
+where
+    S: ConversationStore + ?Sized,
+{
+    let Some(session) = envelope.session.as_ref() else {
+        return Ok(());
+    };
+
+    if store.get_session(session.id.clone()).await?.is_some() {
+        return Ok(());
+    }
+
+    let project_id = match &envelope.project.id {
+        ProjectRefId::Id { id } => id.clone(),
+        ProjectRefId::Ext { .. } => {
+            return Err(IngestError::InvalidEvent(
+                "project missing canonical id after normalization",
+            ));
+        }
+    };
+
+    store
+        .upsert_session(Session {
+            id: session.id.clone(),
+            project_id,
+            provider: "unknown".to_string(),
+            model: "unknown".to_string(),
+            started_on_branch: None,
+            started_on_head: None,
+            started_at: occurred_at,
+            ended_at: None,
+            metadata: serde_json::Value::Object(Default::default()),
+        })
+        .await?;
+
+    Ok(())
+}
+
+fn project_foreign_id(envelope: &EventEnvelope) -> Option<ProjectForeignId> {
+    match &envelope.project.id {
+        ProjectRefId::Ext { src, id } if !src.is_empty() && !id.is_empty() => {
+            Some(ProjectForeignId {
+                pid: String::new(),
+                fid: id.clone(),
+                source: src.clone(),
+            })
+        }
+        ProjectRefId::Id { .. } | ProjectRefId::Ext { .. } => None,
+    }
+}
+
+fn canonical_project_id(project_id: &ProjectRefId) -> Result<String, IngestError> {
+    match project_id {
+        ProjectRefId::Id { id } if !id.is_empty() => Ok(id.clone()),
+        ProjectRefId::Id { .. } | ProjectRefId::Ext { .. } => Err(IngestError::InvalidEvent(
+            "project missing canonical id after normalization",
+        )),
+    }
+}
+
 fn merge_message_part(
     existing: Option<StoredMessage>,
     message_id: String,
@@ -81,15 +146,17 @@ fn merge_message_part(
     let metadata = message
         .metadata
         .as_object_mut()
-        .ok_or(IngestError::InvalidEvent("message metadata is not an object"))?;
+        .ok_or(IngestError::InvalidEvent(
+            "message metadata is not an object",
+        ))?;
 
     {
         let part_order = metadata
             .entry("part_order".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
-        let part_order = part_order
-            .as_array_mut()
-            .ok_or(IngestError::InvalidEvent("message part_order is not an array"))?;
+        let part_order = part_order.as_array_mut().ok_or(IngestError::InvalidEvent(
+            "message part_order is not an array",
+        ))?;
 
         let seen_part = part_order
             .iter()
@@ -109,10 +176,13 @@ fn merge_message_part(
         parts.insert(part_id.clone(), Value::String(text));
     }
 
-    let part_order = metadata
-        .get("part_order")
-        .and_then(Value::as_array)
-        .ok_or(IngestError::InvalidEvent("message part_order is not an array"))?;
+    let part_order =
+        metadata
+            .get("part_order")
+            .and_then(Value::as_array)
+            .ok_or(IngestError::InvalidEvent(
+                "message part_order is not an array",
+            ))?;
     let parts = metadata
         .get("parts")
         .and_then(Value::as_object)
@@ -135,6 +205,10 @@ pub trait Ingest {
 
     fn store(&self) -> &Self::Store;
 
+    /// FIXME: use type-state pattern to enforce normalization at
+    /// compile time instead of runtime of key importance
+    /// is the project reference id - so we don't fail here if the project id
+    /// has not been resolved
     async fn normalize_event(
         &self,
         envelope: &Self::IngestEventEnvelope,
@@ -147,9 +221,10 @@ pub trait Ingest {
         let envelope = self.normalize_event(envelope).await?;
         let occurred_at = envelope.occurred_at;
         let session_id = envelope.session.as_ref().map(|session| session.id.clone());
+        let project_id = canonical_project_id(&envelope.project.id)?;
         let stored = StoredEvent {
             id: envelope.id,
-            project_id: envelope.project.id.clone(),
+            project_id,
             session_id: session_id.clone(),
             occurred_at,
             action: envelope.payload.action().to_string(),
@@ -170,9 +245,10 @@ pub trait Ingest {
         envelope: EventEnvelope,
         occurred_at: TimestampUtc,
     ) -> Result<(), IngestError> {
-        self.store()
+        let project = self
+            .store()
             .upsert_project(Project {
-                id: envelope.project.id.clone(),
+                id: canonical_project_id(&envelope.project.id)?,
                 root: envelope.project.root.clone(),
                 name: envelope.project.name.clone(),
                 repository_fingerprint: envelope.project.repository_fingerprint.clone(),
@@ -180,13 +256,21 @@ pub trait Ingest {
             })
             .await?;
 
+        if let Some(mut foreign_id) = project_foreign_id(&envelope) {
+            foreign_id.pid = project.id.clone();
+            self.store().upsert_project_foreign_id(foreign_id).await?;
+        }
+
+        ensure_session_exists(self.store(), &envelope, occurred_at).await?;
+
         match envelope.payload {
             EventPayload::SessionCreated => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
+                let project_id = canonical_project_id(&envelope.project.id)?;
                 self.store()
                     .upsert_session(Session {
                         id: session.id,
-                        project_id: envelope.project.id,
+                        project_id,
                         provider: "unknown".to_string(),
                         model: "unknown".to_string(),
                         started_on_branch: None,
@@ -199,10 +283,11 @@ pub trait Ingest {
             }
             EventPayload::SessionUpdated => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
+                let project_id = canonical_project_id(&envelope.project.id)?;
                 self.store()
                     .upsert_session(Session {
                         id: session.id,
-                        project_id: envelope.project.id,
+                        project_id,
                         provider: "unknown".to_string(),
                         model: "unknown".to_string(),
                         started_on_branch: None,
@@ -215,9 +300,10 @@ pub trait Ingest {
             }
             EventPayload::SessionDeleted => {
                 let session = envelope.session.ok_or(IngestError::MissingSession)?;
+                let project_id = canonical_project_id(&envelope.project.id)?;
                 let session = Session {
                     id: session.id,
-                    project_id: envelope.project.id,
+                    project_id,
                     provider: "unknown".to_string(),
                     model: "unknown".to_string(),
                     started_on_branch: None,
@@ -248,7 +334,7 @@ pub trait Ingest {
                         occurred_at,
                         serde_json::Value::Object(Default::default()),
                     )
-                        .await?;
+                    .await?;
                 }
             }
             EventPayload::MessagePartUpdated(payload) => {
@@ -299,10 +385,11 @@ pub trait Ingest {
                 warn!("file edited projection not implemented yet");
             }
             EventPayload::GitSnapshot(payload) => {
+                let project_id = canonical_project_id(&envelope.project.id)?;
                 self.store()
                     .record_git_snapshot(GitSnapshot {
                         id: envelope.id,
-                        project_id: envelope.project.id,
+                        project_id,
                         session_id: envelope.session.map(|session| session.id),
                         branch: payload.branch,
                         head_commit: payload.head_commit,
@@ -330,11 +417,12 @@ pub trait Ingest {
                     }
                 });
 
+                let project_id = canonical_project_id(&envelope.project.id)?;
                 self.store()
                     .record_commit(
                         GitCommit {
                             oid: commit_oid.clone(),
-                            project_id: envelope.project.id,
+                            project_id,
                             parent_oid: payload.parent_commit,
                             author_name: payload.commit_author_name,
                             author_email: payload.commit_author_email,
@@ -425,6 +513,64 @@ where
     pub fn new(store: S) -> Self {
         Self { store }
     }
+
+    async fn resolve_project(&self, envelope: &EventEnvelope) -> Result<Project, IngestError> {
+        if let ProjectRefId::Id { id } = &envelope.project.id {
+            let mut projects = self
+                .store
+                .list_projects(Some(ProjectQuery {
+                    id: Some(id.clone()),
+                    limit: Some(1),
+                    ..Default::default()
+                }))
+                .await?;
+            if let Some(project) = projects.pop() {
+                return Ok(project);
+            }
+        }
+
+        if let Some(foreign_id) = project_foreign_id(envelope)
+            && let Some(project) = self
+                .store
+                .get_project_by_foreign_id(foreign_id.source, foreign_id.fid)
+                .await?
+        {
+            return Ok(project);
+        }
+
+        if let Some(repository_fingerprint) = envelope.project.repository_fingerprint.clone()
+            && let Some(project) = self
+                .store
+                .get_project_by_fingerprint(repository_fingerprint)
+                .await?
+        {
+            return Ok(project);
+        }
+
+        let mut root_matches = self
+            .store
+            .list_projects(Some(ProjectQuery {
+                root: Some(envelope.project.root.clone()),
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await?;
+
+        if root_matches.len() == 1 {
+            return Ok(root_matches.pop().expect("root match length checked"));
+        }
+
+        self.store
+            .create_project(Project {
+                id: format!("project:{}", Uuid::new_v4()),
+                root: envelope.project.root.clone(),
+                name: envelope.project.name.clone(),
+                repository_fingerprint: envelope.project.repository_fingerprint.clone(),
+                created_at: envelope.occurred_at,
+            })
+            .await
+            .map_err(IngestError::from)
+    }
 }
 
 #[async_trait::async_trait]
@@ -443,29 +589,18 @@ where
         &self,
         envelope: &EventEnvelope,
     ) -> Result<EventEnvelope, IngestError> {
-        let Some(repository_fingerprint) = envelope.project.repository_fingerprint.clone() else {
-            return Ok(envelope.clone());
-        };
-
-        let mut normalized = envelope.clone();
-        let existing = self
-            .store
-            .list_projects(Some(ProjectQuery {
-                repository_fingerprint: Some(repository_fingerprint.clone()),
-                limit: Some(1),
-                ..Default::default()
-            }))
-            .await?;
-
-        if let Some(project) = existing.into_iter().next() {
-            normalized.project.id = project.id;
-            normalized.project.root = project.root;
-            normalized.project.name = normalized.project.name.or(project.name);
-            normalized.project.repository_fingerprint = project
-                .repository_fingerprint
-                .or(Some(repository_fingerprint));
+        let project = self.resolve_project(envelope).await?;
+        if let Some(mut foreign_id) = project_foreign_id(envelope) {
+            foreign_id.pid = project.id.clone();
+            self.store.upsert_project_foreign_id(foreign_id).await?;
         }
-
+        let mut normalized = envelope.clone();
+        normalized.project.id = ProjectRefId::Id { id: project.id };
+        normalized.project.root = project.root;
+        normalized.project.name = normalized.project.name.or(project.name);
+        normalized.project.repository_fingerprint = project
+            .repository_fingerprint
+            .or(envelope.project.repository_fingerprint.clone());
         Ok(normalized)
     }
 }

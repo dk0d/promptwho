@@ -34,6 +34,17 @@ pub struct AppendSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectForeignId {
+    /// The project's id in PromptWho
+    pub pid: ProjectId,
+    /// Foreign id of the session, e.g. could be a session id from the plugin's system, or a
+    /// composite key like "branch:main,head:abc123"
+    pub fid: String,
+    /// Name of the source of this project id, e.g. "vscode-opencode-plugin", "pi-cli", etc.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: ProjectId,
     pub root: String,

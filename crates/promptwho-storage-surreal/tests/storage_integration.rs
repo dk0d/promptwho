@@ -12,7 +12,10 @@ fn plus_seconds(ts: TimestampUtc, seconds: i64) -> TimestampUtc {
 
 fn test_project_ref() -> ProjectRef {
     ProjectRef {
-        id: "project-a".to_string(),
+        id: ProjectRefId::Ext {
+            src: "opencode".to_string(),
+            id: "project-a".to_string(),
+        },
         root: "/tmp/project-a".to_string(),
         name: Some("project-a".to_string()),
         repository_fingerprint: None,
@@ -73,7 +76,9 @@ fn stored_event(
             version: ProtocolVersion::V1,
             occurred_at,
             project: ProjectRef {
-                id: project_id.to_string(),
+                id: ProjectRefId::Id {
+                    id: project_id.to_string(),
+                },
                 root: format!("/tmp/{project_id}"),
                 name: Some(project_id.to_string()),
                 repository_fingerprint: None,
@@ -201,11 +206,21 @@ async fn conversation_store_round_trips_sessions_and_messages() {
         })
         .await
         .expect("project upsert should succeed");
+    let project = store
+        .list_projects(Some(ProjectQuery {
+            root: Some("/tmp/project-a".to_string()),
+            limit: Some(1),
+            ..Default::default()
+        }))
+        .await
+        .expect("project lookup should succeed")
+        .pop()
+        .expect("project should exist");
 
     store
         .upsert_session(Session {
             id: "session-a".to_string(),
-            project_id: "project-a".to_string(),
+            project_id: project.id.clone(),
             provider: "openai".to_string(),
             model: "gpt-5.4".to_string(),
             started_on_branch: Some("main".to_string()),
@@ -253,7 +268,7 @@ async fn conversation_store_round_trips_sessions_and_messages() {
 
     let sessions = store
         .list_sessions(Some(SessionQuery {
-            project_id: Some("project-a".to_string()),
+            project_id: Some(project.id),
             started_after: Some(plus_seconds(started_at, -1)),
             started_before: Some(plus_seconds(started_at, 1)),
             limit: Some(10),
@@ -275,6 +290,71 @@ async fn conversation_store_round_trips_sessions_and_messages() {
 }
 
 #[tokio::test]
+async fn conversation_store_gets_project_by_repository_fingerprint() {
+    let (_temp_dir, store) = test_store().await;
+    let created_at = chrono::DateTime::UNIX_EPOCH;
+
+    let created = store
+        .create_project(Project {
+            id: "watcher-project".to_string(),
+            root: "/tmp/project-a".to_string(),
+            name: Some("watcher".to_string()),
+            repository_fingerprint: Some("git:test-fingerprint".to_string()),
+            created_at,
+        })
+        .await
+        .expect("project upsert should succeed");
+
+    let project = store
+        .get_project_by_fingerprint("git:test-fingerprint".to_string())
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should exist for fingerprint");
+
+    assert_eq!(project.id, created.id);
+    assert_eq!(project.root, "/tmp/project-a");
+    assert_eq!(
+        project.repository_fingerprint.as_deref(),
+        Some("git:test-fingerprint")
+    );
+}
+
+#[tokio::test]
+async fn conversation_store_gets_project_by_foreign_id() {
+    let (_temp_dir, store) = test_store().await;
+    let created_at = chrono::DateTime::UNIX_EPOCH;
+
+    let project = store
+        .create_project(Project {
+            id: "ignored".to_string(),
+            root: "/tmp/project-a".to_string(),
+            name: Some("project-a".to_string()),
+            repository_fingerprint: Some("git:test-fingerprint".to_string()),
+            created_at,
+        })
+        .await
+        .expect("project create should succeed");
+
+    store
+        .upsert_project_foreign_id(ProjectForeignId {
+            pid: project.id.clone(),
+            fid: "project:opencode-real".to_string(),
+            source: "opencode".to_string(),
+        })
+        .await
+        .expect("foreign id upsert should succeed");
+
+    let fetched = store
+        .get_project_by_foreign_id("opencode".to_string(), "project:opencode-real".to_string())
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should exist for foreign id");
+
+    assert_eq!(fetched.id, project.id);
+    assert_eq!(fetched.root, "/tmp/project-a");
+}
+
+#[tokio::test]
 async fn message_upsert_replaces_existing_message_state_for_same_id() {
     let (_temp_dir, store) = test_store().await;
     let started_at = chrono::DateTime::UNIX_EPOCH;
@@ -289,11 +369,21 @@ async fn message_upsert_replaces_existing_message_state_for_same_id() {
         })
         .await
         .expect("project upsert should succeed");
+    let project = store
+        .list_projects(Some(ProjectQuery {
+            root: Some("/tmp/project-a".to_string()),
+            limit: Some(1),
+            ..Default::default()
+        }))
+        .await
+        .expect("project lookup should succeed")
+        .pop()
+        .expect("project should exist");
 
     store
         .upsert_session(Session {
             id: "session-a".to_string(),
-            project_id: "project-a".to_string(),
+            project_id: project.id.clone(),
             provider: "openai".to_string(),
             model: "gpt-5.4".to_string(),
             started_on_branch: Some("main".to_string()),
@@ -345,15 +435,14 @@ async fn message_upsert_replaces_existing_message_state_for_same_id() {
 async fn direct_projection_writes_accept_tool_and_git_records() {
     let (_temp_dir, store) = test_store().await;
     let created_at = chrono::DateTime::UNIX_EPOCH;
-    let project = test_project_ref();
     let session = test_session_ref();
 
-    store
+    let project = store
         .upsert_project(Project {
-            id: project.id.clone(),
-            root: project.root,
-            name: project.name,
-            repository_fingerprint: project.repository_fingerprint,
+            id: "project-a".to_string(),
+            root: "/tmp/project-a".to_string(),
+            name: Some("project-a".to_string()),
+            repository_fingerprint: None,
             created_at,
         })
         .await

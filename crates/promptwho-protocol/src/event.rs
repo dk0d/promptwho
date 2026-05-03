@@ -14,8 +14,15 @@ pub enum ProtocolVersion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub enum ProjectRefId {
+    Id { id: String },
+    Ext { src: String, id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProjectRef {
-    pub id: String,
+    /// Canonical project ID in promptwho
+    pub id: ProjectRefId,
     pub root: String,
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
