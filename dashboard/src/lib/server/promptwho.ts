@@ -90,6 +90,8 @@ export async function loadDashboardData(
 				session_id: filters.sessionId,
 				action: filters.action,
 				limit: filters.eventLimit,
+				sort: "desc",
+				sort_by: "occurred_at",
 			}),
 			filters.query
 				? fetchJson<DashboardSearchHit[]>(fetchFn, "/v1/search", {

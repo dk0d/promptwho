@@ -9,6 +9,15 @@ pub enum Pagination {
     Offset(u32),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "order", content = "by")]
+pub enum SortOrder {
+    #[serde(rename = "asc")]
+    Ascending(Option<String>), // Optional field to specify the sorting key
+    #[serde(rename = "desc")]
+    Descending(Option<String>), // Optional field to specify the sorting key
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProjectQuery {
     pub id: Option<ProjectId>,
@@ -30,6 +39,7 @@ pub struct EventQuery {
     pub occurred_before: Option<TimestampUtc>,
     pub limit: Option<u32>,
     pub pagination: Option<Pagination>,
+    pub sort: Option<SortOrder>,
 }
 
 #[derive(Debug, Clone, Default)]

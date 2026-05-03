@@ -477,7 +477,22 @@ impl EventStore for SurrealStore {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
         }
-        sql.push_str(" ORDER BY value.occurred_at ASC, value.id ASC");
+
+        match query.sort {
+            Some(SortOrder::Ascending(by)) => {
+                let by = by.unwrap_or("occurred_at".to_string());
+                sql.push_str(&format!(" ORDER BY value.{by} ASC"));
+            }
+            Some(SortOrder::Descending(by)) => {
+                let by = by.unwrap_or("occurred_at".to_string());
+                sql.push_str(&format!(" ORDER BY value.{by} DESC"));
+            }
+            None => {
+                sql.push_str(" ORDER BY value.occurred_at DESC, value.id ASC");
+            }
+        }
+
+        // sql.push_str(" ORDER BY value.occurred_at ASC, value.id ASC");
         if let Some(limit) = query.limit {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
@@ -586,7 +601,10 @@ impl ConversationStore for SurrealStore {
         completed_at: promptwho_protocol::TimestampUtc,
         metadata: JsonValue,
     ) -> Result<(), StoreError> {
-        let Some(mut call) = self.select_record::<ToolCall>("tool_calls", &tool_call_id).await? else {
+        let Some(mut call) = self
+            .select_record::<ToolCall>("tool_calls", &tool_call_id)
+            .await?
+        else {
             return Err(StoreError::Message(format!(
                 "tool call not found for completion: {tool_call_id}"
             )));
@@ -786,10 +804,7 @@ impl GitStore for SurrealStore {
 
         if let Some(author_email) = query.author_email {
             conditions.push("value.author_email = $author_email".to_string());
-            bindings.insert(
-                "author_email".to_string(),
-                JsonValue::String(author_email),
-            );
+            bindings.insert("author_email".to_string(), JsonValue::String(author_email));
         }
 
         if let Some(committed_after) = query.committed_after {
@@ -889,7 +904,11 @@ impl GitStore for SurrealStore {
         let limit = query.limit.map(|limit| limit as usize);
 
         Ok(match limit {
-            Some(limit) => filtered_commits.into_iter().skip(offset).take(limit).collect(),
+            Some(limit) => filtered_commits
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect(),
             None => filtered_commits.into_iter().skip(offset).collect(),
         })
     }
@@ -914,15 +933,14 @@ impl GitStore for SurrealStore {
         file_sql.push_str(&file_conditions.join(" AND "));
         file_sql.push_str(" ORDER BY value.path ASC, value.id ASC");
 
-        let files = self.query_table::<GitCommitFile>(&file_sql, bindings.clone()).await?;
+        let files = self
+            .query_table::<GitCommitFile>(&file_sql, bindings.clone())
+            .await?;
         if files.is_empty() {
             return Ok(Vec::new());
         }
 
-        let file_ids = files
-            .into_iter()
-            .map(|file| file.id)
-            .collect::<Vec<_>>();
+        let file_ids = files.into_iter().map(|file| file.id).collect::<Vec<_>>();
 
         let mut conditions = vec!["value.commit_file_id INSIDE $commit_file_ids".to_string()];
         bindings.insert(
@@ -937,7 +955,9 @@ impl GitStore for SurrealStore {
 
         let mut sql = "SELECT * FROM git_commit_hunks WHERE ".to_string();
         sql.push_str(&conditions.join(" AND "));
-        sql.push_str(" ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC");
+        sql.push_str(
+            " ORDER BY value.file_path ASC, value.new_start ASC, value.old_start ASC, value.id ASC",
+        );
         if let Some(limit) = query.limit {
             sql.push_str(" LIMIT $limit");
             bindings.insert("limit".to_string(), JsonValue::from(limit));
@@ -1011,8 +1031,12 @@ impl AttributionStore for SurrealStore {
         attributions: Vec<PatchAttribution>,
     ) -> Result<(), StoreError> {
         for attribution in attributions {
-            self.upsert_record("patch_attributions", &attribution.id.to_string(), attribution)
-                .await?;
+            self.upsert_record(
+                "patch_attributions",
+                &attribution.id.to_string(),
+                attribution,
+            )
+            .await?;
         }
 
         Ok(())
@@ -1042,12 +1066,13 @@ impl AttributionStore for SurrealStore {
                 )
             "#;
 
-            let mut rows = self.query_table::<PatchAttribution>(sql, {
-                let mut scoped = bindings.clone();
-                scoped.insert("session_id".to_string(), JsonValue::String(session_id));
-                scoped
-            })
-            .await?;
+            let mut rows = self
+                .query_table::<PatchAttribution>(sql, {
+                    let mut scoped = bindings.clone();
+                    scoped.insert("session_id".to_string(), JsonValue::String(session_id));
+                    scoped
+                })
+                .await?;
 
             if let Some(commit_oid) = query.commit_oid {
                 rows = filter_patch_attributions_by_commit(self, rows, &commit_oid).await?;

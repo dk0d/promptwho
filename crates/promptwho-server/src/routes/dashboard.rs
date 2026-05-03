@@ -4,7 +4,8 @@ use axum::{
 };
 use promptwho_protocol::TimestampUtc;
 use promptwho_storage::{
-    ConversationStore, EventQuery, EventStore, SearchStore, SessionQuery, TextSearchQuery,
+    ConversationStore, EventQuery, EventStore, SearchStore, SessionQuery, SortOrder,
+    TextSearchQuery,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,8 @@ pub struct EventListParams {
     pub session_id: Option<String>,
     pub action: Option<String>,
     pub limit: Option<u32>,
+    pub sort: Option<String>,
+    pub sort_by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +158,13 @@ pub async fn list_events(
     State(state): State<AppState>,
     Query(params): Query<EventListParams>,
 ) -> Result<Json<Vec<DashboardEvent>>, ServerError> {
+    let sort = match (params.sort.as_deref(), params.sort_by.as_deref()) {
+        (Some("asc"), Some(by)) => Some(SortOrder::Ascending(Some(by.to_string()))),
+        (Some("desc"), Some(by)) => Some(SortOrder::Descending(Some(by.to_string()))),
+        (Some("asc"), None) => Some(SortOrder::Ascending(Some("occurred_at".to_string()))),
+        (Some("desc"), None) => Some(SortOrder::Descending(Some("occurred_at".to_string()))),
+        _ => None,
+    };
     let events = state
         .store
         .list_events(Some(EventQuery {
@@ -162,6 +172,7 @@ pub async fn list_events(
             session_id: params.session_id,
             action: params.action,
             limit: Some(params.limit.unwrap_or(100).min(500)),
+            sort,
             ..Default::default()
         }))
         .await
