@@ -1,0 +1,26 @@
+[package]
+name = "promptwho-watcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+gix = "0.83.0"
+promptwho-protocol = { path = "../promptwho-protocol" }
+reqwest = { version = "0.13.3", default-features = false, features = [
+  "rustls",
+] }
+rmp-serde.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"
