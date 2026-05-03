@@ -1,17 +1,15 @@
 import { encode } from "@msgpack/msgpack";
 import type { Event, OpencodeClient, Project } from "@opencode-ai/sdk";
+import { resolveEvents, type PromptwhoResolvedEvent, type SourceEventEnvelope } from "./events";
 
 export interface PromptwhoTransport {
   publish(
     client: OpencodeClient,
-    events: Array<{
-      context: {
-        project: Pick<Project, "id" | "worktree" | "vcs"> & { name?: string };
-        directory: string;
-        worktree: string;
-      };
-      event: Event;
-    }>,
+    events: SourceEventEnvelope[],
+  ): Promise<void>;
+  publishResolved(
+    client: OpencodeClient,
+    events: PromptwhoResolvedEvent[],
   ): Promise<void>;
 }
 
@@ -20,19 +18,27 @@ export class HttpMsgpackTransport implements PromptwhoTransport {
 
   async publish(
     client: OpencodeClient,
-    events: Array<{
-      context: {
-        project: Pick<Project, "id" | "worktree" | "vcs"> & { name?: string };
-        directory: string;
-        worktree: string;
-      };
-      event: Event;
-    }>,
+    events: SourceEventEnvelope[],
   ): Promise<void> {
+    const resolvedEvents = await resolveEvents(events);
+
+    await this.publishResolved(client, resolvedEvents, events.map(({ event }) => event.type));
+  }
+
+  async publishResolved(
+    client: OpencodeClient,
+    events: PromptwhoResolvedEvent[],
+    eventTypes: string[] = [],
+  ): Promise<void> {
+    const resolvedEvents = events;
+
+    if (resolvedEvents.length === 0) {
+      return;
+    }
+
     const message = {
-      flavor: "opencode",
       request_id: crypto.randomUUID(),
-      events,
+      events: resolvedEvents,
     };
 
     const response = await fetch(`${this.baseUrl}/v1/events`, {
@@ -46,7 +52,6 @@ export class HttpMsgpackTransport implements PromptwhoTransport {
 
     if (!response.ok) {
       const responseBody = await response.text().catch(() => "<unavailable>");
-
       client.app.log({
         body: {
           service: "promptwho",
@@ -56,7 +61,8 @@ export class HttpMsgpackTransport implements PromptwhoTransport {
             status: response.status,
             statusText: response.statusText,
             responseBody,
-            eventTypes: events.map(({ event }) => event.type),
+            eventTypes,
+            resolvedActions: resolvedEvents.map((event) => event.action),
           }
         }
       },)

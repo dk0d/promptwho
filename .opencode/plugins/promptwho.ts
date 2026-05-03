@@ -1,1 +1,1 @@
-export { PromptwhoPlugin, server, default } from "../../plugin/src/index.ts";
+export { PromptwhoPlugin, server, default } from "../../plugins/opencode/src/index.ts";
