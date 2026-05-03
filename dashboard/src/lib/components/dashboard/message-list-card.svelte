@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Badge } from '$lib/shadcn/components/ui/badge';
+	import DetailsDialog from '$lib/components/dashboard/details-dialog.svelte';
 	import {
 		Card,
 		CardContent,
@@ -47,8 +48,15 @@
 					{#each messages as message, index}
 						<div class="space-y-3">
 							<div class="flex items-center justify-between gap-3">
-								<Badge variant={message.role === 'user' ? 'default' : 'secondary'}>{message.role}</Badge>
-								<span class="text-xs text-muted-foreground">{formatDashboardDate(message.created_at)}</span>
+								<div class="flex items-center gap-3">
+									<Badge variant={message.role === 'user' ? 'default' : 'secondary'}>{message.role}</Badge>
+									<span class="text-xs text-muted-foreground">{formatDashboardDate(message.created_at)}</span>
+								</div>
+								<DetailsDialog
+									title={`Message ${message.id}`}
+									description="Complete message payload from the selected session."
+									data={message}
+								/>
 							</div>
 							<p class="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
 							{#if index < messages.length - 1}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Badge } from '$lib/shadcn/components/ui/badge';
 	import { Button } from '$lib/shadcn/components/ui/button';
+	import DetailsDialog from '$lib/components/dashboard/details-dialog.svelte';
 	import {
 		Card,
 		CardContent,
@@ -49,27 +50,34 @@
 					<p class="text-sm text-muted-foreground">No sessions match the current filters.</p>
 				{:else}
 					{#each sessions as session}
-						<Button
-							type="button"
-							variant={session.id === selectedSessionId ? 'secondary' : 'outline'}
-							class="h-auto w-full items-start justify-start px-3 py-3 text-left"
-							onclick={() => onSelect(session.id === selectedSessionId ? '' : session.id)}
-						>
-							<span class="flex w-full flex-col gap-2">
-								<span class="flex flex-wrap gap-2">
-									<Badge variant="outline">{session.provider}</Badge>
-									<Badge variant="outline">{session.model}</Badge>
-									<Badge variant="secondary">{session.project_id}</Badge>
+						<div class="flex items-start gap-2">
+							<Button
+								type="button"
+								variant={session.id === selectedSessionId ? 'secondary' : 'outline'}
+								class="h-auto flex-1 items-start justify-start px-3 py-3 text-left"
+								onclick={() => onSelect(session.id === selectedSessionId ? '' : session.id)}
+							>
+								<span class="flex w-full flex-col gap-2">
+									<span class="flex flex-wrap gap-2">
+										<Badge variant="outline">{session.provider}</Badge>
+										<Badge variant="outline">{session.model}</Badge>
+										<Badge variant="secondary">{session.project_id}</Badge>
+									</span>
+									<span class="font-medium">{session.id}</span>
+									<span class="text-xs text-muted-foreground">
+										Started {formatDashboardDate(session.started_at)}
+										{#if session.ended_at}
+											 • Ended {formatDashboardDate(session.ended_at)}
+										{/if}
+									</span>
 								</span>
-								<span class="font-medium">{session.id}</span>
-								<span class="text-xs text-muted-foreground">
-									Started {formatDashboardDate(session.started_at)}
-									{#if session.ended_at}
-										 • Ended {formatDashboardDate(session.ended_at)}
-									{/if}
-								</span>
-							</span>
-						</Button>
+							</Button>
+							<DetailsDialog
+								title={`Session ${session.id}`}
+								description="Complete session payload from the dashboard query."
+								data={session}
+							/>
+						</div>
 					{/each}
 				{/if}
 			</div>

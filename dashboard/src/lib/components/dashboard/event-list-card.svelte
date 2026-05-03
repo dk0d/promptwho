@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SquareTerminal } from '@lucide/svelte';
 	import { Badge } from '$lib/shadcn/components/ui/badge';
+	import DetailsDialog from '$lib/components/dashboard/details-dialog.svelte';
 	import {
 		Card,
 		CardContent,
@@ -38,9 +39,16 @@
 				<div class="space-y-4">
 					{#each events as event, index}
 						<div class="space-y-3">
-							<div class="flex flex-wrap items-center gap-2">
-								<Badge variant="outline">{event.action}</Badge>
-								<Badge variant="secondary">{event.project_id}</Badge>
+							<div class="flex items-start justify-between gap-3">
+								<div class="flex flex-wrap items-center gap-2">
+									<Badge variant="outline">{event.action}</Badge>
+									<Badge variant="secondary">{event.project_id}</Badge>
+								</div>
+								<DetailsDialog
+									title={`Event ${event.id}`}
+									description="Complete event payload returned by the server query."
+									data={event}
+								/>
 							</div>
 							<div>
 								<p class="font-medium">{event.id}</p>
