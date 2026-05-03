@@ -125,6 +125,22 @@ fn canonical_project_id(project_id: &ProjectRefId) -> Result<String, IngestError
     }
 }
 
+fn generated_project_id(envelope: &EventEnvelope) -> String {
+    let seed =
+        if let Some(repository_fingerprint) = envelope.project.repository_fingerprint.as_deref() {
+            format!("fingerprint:{repository_fingerprint}")
+        } else if let Some(foreign_id) = project_foreign_id(envelope) {
+            format!("foreign:{}:{}", foreign_id.source, foreign_id.fid)
+        } else {
+            format!("root:{}", envelope.project.root)
+        };
+
+    format!(
+        "project:{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, seed.as_bytes())
+    )
+}
+
 fn merge_message_part(
     existing: Option<StoredMessage>,
     message_id: String,
@@ -562,7 +578,7 @@ where
 
         self.store
             .create_project(Project {
-                id: format!("project:{}", Uuid::new_v4()),
+                id: generated_project_id(envelope),
                 root: envelope.project.root.clone(),
                 name: envelope.project.name.clone(),
                 repository_fingerprint: envelope.project.repository_fingerprint.clone(),
