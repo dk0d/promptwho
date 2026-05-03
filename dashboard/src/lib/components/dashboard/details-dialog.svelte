@@ -5,6 +5,7 @@
 		ScrollArea,
 		ScrollAreaScrollbar,
 	} from "$lib/shadcn/components/ui/scroll-area";
+	import { EllipsisIcon } from "@lucide/svelte";
 
 	let {
 		title,
@@ -38,8 +39,8 @@
 	}
 </script>
 
-<Button type="button" variant="outline" size="sm" onclick={() => (open = true)}
-	>Details</Button
+<Button type="button" size="icon" variant="ghost" onclick={() => (open = true)}
+	><EllipsisIcon /></Button
 >
 
 <Dialog.Root bind:open>
@@ -50,7 +51,7 @@
 		</Dialog.Header>
 
 		<ScrollArea class="max-h-[70vh] pr-4">
-			<div class="space-y-4">
+			<div class="space-y-4 p-4">
 				{#each entries as [key, value]}
 					<div class="space-y-1.5">
 						<p

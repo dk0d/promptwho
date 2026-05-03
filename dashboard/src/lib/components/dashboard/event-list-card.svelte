@@ -1,21 +1,21 @@
 <script lang="ts">
-	import { SquareTerminal } from '@lucide/svelte';
-	import { Badge } from '$lib/shadcn/components/ui/badge';
-	import DetailsDialog from '$lib/components/dashboard/details-dialog.svelte';
+	import { SquareTerminal } from "@lucide/svelte";
+	import { Badge } from "$lib/shadcn/components/ui/badge";
+	import DetailsDialog from "$lib/components/dashboard/details-dialog.svelte";
 	import {
 		Card,
 		CardContent,
 		CardDescription,
 		CardHeader,
-		CardTitle
-	} from '$lib/shadcn/components/ui/card';
+		CardTitle,
+	} from "$lib/shadcn/components/ui/card";
 	import {
 		ScrollArea,
-		ScrollAreaScrollbar
-	} from '$lib/shadcn/components/ui/scroll-area';
-	import { Separator } from '$lib/shadcn/components/ui/separator';
-	import type { DashboardEvent } from '$lib/promptwho';
-	import { formatDashboardDate } from '$lib/promptwho';
+		ScrollAreaScrollbar,
+	} from "$lib/shadcn/components/ui/scroll-area";
+	import { Separator } from "$lib/shadcn/components/ui/separator";
+	import type { DashboardEvent } from "$lib/promptwho";
+	import { formatDashboardDate } from "$lib/promptwho";
 
 	let { events }: { events: DashboardEvent[] } = $props();
 </script>
@@ -29,33 +29,39 @@
 				<SquareTerminal class="size-4 text-muted-foreground" />
 			</div>
 		</CardTitle>
-		<CardDescription>Filtered raw event stream from the Rust server endpoints.</CardDescription>
+		<CardDescription
+			>Filtered raw event stream from the Rust server endpoints.</CardDescription
+		>
 	</CardHeader>
 	<CardContent>
-		<ScrollArea class="h-[28rem] pr-3">
+		<ScrollArea class="h-112 pr-3">
 			{#if events.length === 0}
-				<p class="text-sm text-muted-foreground">No events match the current filters.</p>
+				<p class="text-sm text-muted-foreground">
+					No events match the current filters.
+				</p>
 			{:else}
 				<div class="space-y-4">
 					{#each events as event, index}
 						<div class="space-y-3">
-							<div class="flex items-start justify-between gap-3">
-								<div class="flex flex-wrap items-center gap-2">
+							<div class="flex flex-wrap items-start justify-between gap-3">
+								<div
+									class="flex flex-wrap items-center justify-between gap-2 w-full"
+								>
 									<Badge variant="outline">{event.action}</Badge>
-									<Badge variant="secondary">{event.project_id}</Badge>
+									<DetailsDialog
+										title={`Event ${event.id}`}
+										description="Complete event payload returned by the server query."
+										data={event}
+									/>
 								</div>
-								<DetailsDialog
-									title={`Event ${event.id}`}
-									description="Complete event payload returned by the server query."
-									data={event}
-								/>
+								<Badge variant="secondary">{event.project_id}</Badge>
 							</div>
 							<div>
 								<p class="font-medium">{event.id}</p>
 								<p class="text-xs text-muted-foreground">
 									{formatDashboardDate(event.occurred_at)}
 									{#if event.session_id}
-										 • session {event.session_id}
+										• session {event.session_id}
 									{/if}
 								</p>
 							</div>
