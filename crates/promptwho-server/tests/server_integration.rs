@@ -468,6 +468,7 @@ async fn ingest_events_normalize_project_ids_by_repository_fingerprint() {
         .expect("project listing should succeed");
     assert_eq!(projects.len(), 1);
     assert!(projects[0].id.starts_with("project:"));
+    assert_eq!(projects[0].id.matches("project:").count(), 1);
     assert_ne!(projects[0].id, "watcher-project");
     let canonical_project_id = projects[0].id.clone();
 
@@ -592,6 +593,7 @@ async fn ingest_events_backfill_project_fingerprint_from_same_root_before_git_wa
         .expect("project listing should succeed");
     assert_eq!(projects.len(), 1);
     assert!(projects[0].id.starts_with("project:"));
+    assert_eq!(projects[0].id.matches("project:").count(), 1);
     assert_ne!(projects[0].id, plugin_project_id);
     assert_eq!(
         projects[0].repository_fingerprint.as_deref(),
@@ -623,6 +625,95 @@ async fn ingest_events_backfill_project_fingerprint_from_same_root_before_git_wa
             .iter()
             .all(|event| event.project_id == projects[0].id)
     );
+}
+
+#[tokio::test]
+async fn ingest_events_reuse_same_project_for_repeated_plugin_foreign_id_before_fingerprint() {
+    let (_temp_dir, store) = test_store().await;
+    let state = AppState {
+        store: store.clone(),
+    };
+    let server = TestServer::new(build_router(state));
+
+    let occurred_at = chrono::DateTime::UNIX_EPOCH;
+    let plugin_project_id = "project:plugin-real".to_string();
+    let root = "/tmp/promptwho-test".to_string();
+
+    let response: TestResponse = server
+        .post("/v1/events")
+        .msgpack(&IngestEventsRequest {
+            request_id: Uuid::new_v4(),
+            events: vec![
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project: ProjectRef {
+                        id: ProjectRefId::Ext {
+                            src: "opencode".to_string(),
+                            id: plugin_project_id.clone(),
+                        },
+                        root: root.clone(),
+                        name: Some("opencode".to_string()),
+                        repository_fingerprint: None,
+                    },
+                    session: Some(test_session()),
+                    source: test_source(),
+                    payload: EventPayload::MessageUpdated(MessageUpdatedPayload {
+                        message_id: "message-1".to_string(),
+                        role: "user".to_string(),
+                        content: Some("first event".to_string()),
+                        token_count: Some(1),
+                    }),
+                },
+                EventEnvelope {
+                    id: Uuid::new_v4(),
+                    version: ProtocolVersion::V1,
+                    occurred_at,
+                    project: ProjectRef {
+                        id: ProjectRefId::Ext {
+                            src: "opencode".to_string(),
+                            id: plugin_project_id.clone(),
+                        },
+                        root,
+                        name: Some("opencode".to_string()),
+                        repository_fingerprint: None,
+                    },
+                    session: Some(test_session()),
+                    source: test_source(),
+                    payload: EventPayload::MessageUpdated(MessageUpdatedPayload {
+                        message_id: "message-2".to_string(),
+                        role: "user".to_string(),
+                        content: Some("second event".to_string()),
+                        token_count: Some(1),
+                    }),
+                },
+            ],
+        })
+        .await;
+
+    response.assert_status(StatusCode::ACCEPTED);
+
+    let projects = store
+        .list_projects(None)
+        .await
+        .expect("project listing should succeed");
+    assert_eq!(projects.len(), 1);
+
+    let canonical_project_id = projects[0].id.clone();
+    let session = store
+        .get_session("session-test".to_string())
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should exist");
+    assert_eq!(session.project_id, canonical_project_id);
+
+    let events = store
+        .list_events(None)
+        .await
+        .expect("event listing should succeed");
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.project_id == canonical_project_id));
 }
 
 #[tokio::test]
