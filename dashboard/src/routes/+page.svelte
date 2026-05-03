@@ -9,7 +9,11 @@
 	import ProjectListCard from "$lib/components/dashboard/project-list-card.svelte";
 	import SearchResultsCard from "$lib/components/dashboard/search-results-card.svelte";
 	import SessionListCard from "$lib/components/dashboard/session-list-card.svelte";
-	import { DEFAULT_EVENT_LIMIT, type DashboardFilters } from "$lib/promptwho";
+	import {
+		parseDashboardFilters,
+		writeDashboardFilters,
+		type DashboardFilters,
+	} from "$lib/promptwho";
 
 	let { data }: { data: PageData } = $props();
 
@@ -27,13 +31,7 @@
 		sessions.find((session) => session.id === data.filters.sessionId) ?? null,
 	);
 
-	let form = $state<DashboardFilters>({
-		query: "",
-		projectId: "",
-		sessionId: "",
-		action: "",
-		eventLimit: DEFAULT_EVENT_LIMIT,
-	});
+	let form = $state<DashboardFilters>(parseDashboardFilters(page.url.searchParams));
 
 	$effect(() => {
 		form = {
@@ -49,18 +47,7 @@
 		const merged = { ...form, ...next };
 		const url = new URL(page.url);
 
-		url.searchParams.delete("q");
-		url.searchParams.delete("project");
-		url.searchParams.delete("session");
-		url.searchParams.delete("action");
-		url.searchParams.delete("eventLimit");
-
-		if (merged.query) url.searchParams.set("q", merged.query);
-		if (merged.projectId) url.searchParams.set("project", merged.projectId);
-		if (merged.sessionId) url.searchParams.set("session", merged.sessionId);
-		if (merged.action) url.searchParams.set("action", merged.action);
-		if (merged.eventLimit)
-			url.searchParams.set("eventLimit", merged.eventLimit);
+		writeDashboardFilters(url.searchParams, merged);
 
 		form = merged;
 		await goto(`${url.pathname}${url.search}`, {
@@ -115,6 +102,7 @@
 	>
 		<DashboardHeader
 			baseUrl={data.dashboard.baseUrl}
+			error={data.dashboard.error}
 			projectCount={projects.length}
 			sessionCount={sessions.length}
 			eventCount={events.length}
@@ -129,19 +117,19 @@
 			{onSessionChange}
 			{onEventLimitChange}
 		/>
-		{#if data.dashboard.baseUrl === ""}
-			<div class="rounded-lg bg-accent p-4">
-				<div class="flex">
-					<div class="shrink-0">
-						No data available. Please set up your local PromptWho server and
-						connect it to the dashboard to see your projects, sessions,
-						messages, and events here.
-					</div>
-				</div>
+		{#if data.dashboard.error}
+			<div class="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+				<p class="font-medium text-destructive">Dashboard data could not be loaded.</p>
+				<p class="mt-1 text-muted-foreground">
+					{data.dashboard.error}
+				</p>
+				<p class="mt-3 text-muted-foreground">
+					Checked endpoint <code>{data.dashboard.baseUrl}</code>.
+				</p>
 			</div>
 		{:else}
 			<div class="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-				<div class="space-y-6">
+				<div class="space-y-6 xl:sticky xl:top-6 xl:self-start">
 					<ProjectListCard
 						{projects}
 						selectedProjectId={data.filters.projectId}
@@ -155,13 +143,13 @@
 					/>
 				</div>
 
-				<div class="space-y-6">
-					<SearchResultsCard query={data.filters.query} {searchHits} />
-
-					<div class="grid gap-6 2xl:grid-cols-2">
+				<div class="grid gap-6">
+					<div class="grid gap-6 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
 						<MessageListCard {messages} {selectedSession} />
 						<EventListCard {events} />
 					</div>
+
+					<SearchResultsCard query={data.filters.query} {searchHits} />
 				</div>
 			</div>
 		{/if}

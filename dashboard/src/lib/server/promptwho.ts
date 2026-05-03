@@ -76,8 +76,19 @@ export async function loadDashboardData(
 	fetchFn: typeof fetch,
 	filters: DashboardFilters,
 ): Promise<DashboardData> {
-	const result = await Try(async () => {
-		const baseUrl = getPromptwhoBaseUrl();
+	const baseUrl = getPromptwhoBaseUrl();
+	const result = await Try<
+		{
+			projects: DashboardProject[];
+			sessions: DashboardSession[];
+			events: DashboardEvent[];
+			searchHits: DashboardSearchHit[];
+			messages: DashboardMessage[];
+			baseUrl: string;
+			error: null;
+		},
+		string
+	>(async () => {
 		const [projects, sessions, events, searchHits, messages] = await Promise.all([
 
 			fetchJson<DashboardProject[]>(fetchFn, "/v1/projects"),
@@ -114,17 +125,58 @@ export async function loadDashboardData(
 			searchHits,
 			messages,
 			baseUrl,
+			error: null,
 		};
 	});
 	if (result.ok)
-		return result.data;
+		return {
+			...result.data,
+			sessions: reconcileSelectedSession(result.data.sessions, result.data.messages, filters.sessionId),
+		};
 	return {
 		projects: [],
 		sessions: [],
 		events: [],
 		searchHits: [],
 		messages: [],
-		baseUrl: "",
+		baseUrl,
+		error: result.error,
 	};
 
+}
+
+function reconcileSelectedSession(
+	sessions: DashboardSession[],
+	messages: DashboardMessage[],
+	selectedSessionId: string,
+) {
+	if (!selectedSessionId || sessions.some((session) => session.id === selectedSessionId)) {
+		return sessions;
+	}
+
+	const selectedMessages = messages.filter((message) => message.session_id === selectedSessionId);
+	if (selectedMessages.length === 0) {
+		return sessions;
+	}
+
+	const startedAt = selectedMessages.reduce(
+		(earliest, message) => (message.created_at < earliest ? message.created_at : earliest),
+		selectedMessages[0].created_at,
+	);
+	const endedAt = selectedMessages.reduce(
+		(latest, message) => (message.created_at > latest ? message.created_at : latest),
+		selectedMessages[0].created_at,
+	);
+
+	return [
+		{
+			id: selectedSessionId,
+			project_id: "Unknown project",
+			provider: "Unknown provider",
+			model: "Unknown model",
+			started_at: startedAt,
+			ended_at: endedAt,
+		},
+		...sessions,
+	];
 }

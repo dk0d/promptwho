@@ -33,8 +33,8 @@
 			>Filtered raw event stream from the Rust server endpoints.</CardDescription
 		>
 	</CardHeader>
-	<CardContent>
-		<ScrollArea class="h-112 pr-3">
+	<CardContent class="pt-0">
+		<ScrollArea class="h-[32rem] pr-3">
 			{#if events.length === 0}
 				<p class="text-sm text-muted-foreground">
 					No events match the current filters.
@@ -42,7 +42,7 @@
 			{:else}
 				<div class="space-y-4">
 					{#each events as event, index}
-						<div class="space-y-3">
+						<div class="rounded-lg border bg-muted/20 p-4">
 							<div class="flex flex-wrap items-start justify-between gap-3">
 								<div
 									class="flex flex-wrap items-center justify-between gap-2 w-full"
@@ -57,7 +57,7 @@
 								<Badge variant="secondary">{event.project_id}</Badge>
 							</div>
 							<div>
-								<p class="font-medium">{event.id}</p>
+								<p class="break-all font-medium">{event.id}</p>
 								<p class="text-xs text-muted-foreground">
 									{formatDashboardDate(event.occurred_at)}
 									{#if event.session_id}
@@ -66,7 +66,7 @@
 								</p>
 							</div>
 							{#if index < events.length - 1}
-								<Separator />
+								<Separator class="mt-4" />
 							{/if}
 						</div>
 					{/each}

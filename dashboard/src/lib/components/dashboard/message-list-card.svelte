@@ -39,14 +39,14 @@
 			{/if}
 		</CardDescription>
 	</CardHeader>
-	<CardContent>
-		<ScrollArea class="h-[28rem] pr-3">
+	<CardContent class="pt-0">
+		<ScrollArea class="h-[32rem] pr-3">
 			{#if messages.length === 0}
 				<p class="text-sm text-muted-foreground">No messages loaded for the current session.</p>
 			{:else}
 				<div class="space-y-4">
 					{#each messages as message, index}
-						<div class="space-y-3">
+						<div class="rounded-lg border bg-muted/20 p-4">
 							<div class="flex items-center justify-between gap-3">
 								<div class="flex items-center gap-3">
 									<Badge variant={message.role === 'user' ? 'default' : 'secondary'}>{message.role}</Badge>
@@ -58,9 +58,9 @@
 									data={message}
 								/>
 							</div>
-							<p class="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
+							<p class="mt-3 whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p>
 							{#if index < messages.length - 1}
-								<Separator />
+								<Separator class="mt-4" />
 							{/if}
 						</div>
 					{/each}

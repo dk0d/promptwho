@@ -43,8 +43,8 @@
 			{/if}
 		</CardDescription>
 	</CardHeader>
-	<CardContent>
-		<ScrollArea class="h-96 pr-3">
+	<CardContent class="pt-0">
+		<ScrollArea class="h-[26rem] pr-3">
 			<div class="space-y-2">
 				{#if sessions.length === 0}
 					<p class="text-sm text-muted-foreground">No sessions match the current filters.</p>

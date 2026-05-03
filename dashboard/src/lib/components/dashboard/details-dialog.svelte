@@ -61,11 +61,11 @@
 						</p>
 						{#if isBlockValue(value)}
 							<pre
-								class="overflow-x-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap wrap-break-word">{formatValue(
+								class="overflow-x-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap break-words">{formatValue(
 									value,
 								)}</pre>
 						{:else}
-							<p class="text-sm wrap-break-word">{formatValue(value)}</p>
+							<p class="text-sm break-words">{formatValue(value)}</p>
 						{/if}
 					</div>
 				{/each}

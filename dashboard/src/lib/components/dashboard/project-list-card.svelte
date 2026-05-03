@@ -33,8 +33,8 @@
 		</CardTitle>
 		<CardDescription>Switch between tracked repositories.</CardDescription>
 	</CardHeader>
-	<CardContent>
-		<ScrollArea class="h-72 pr-3">
+	<CardContent class="pt-0">
+		<ScrollArea class="h-[22rem] pr-3">
 			<div class="space-y-2">
 				{#if projects.length === 0}
 					<p class="text-sm text-muted-foreground">No projects are available from the promptwho server yet.</p>
