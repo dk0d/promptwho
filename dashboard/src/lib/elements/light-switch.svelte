@@ -6,9 +6,14 @@
   import { Button } from "$lib/shadcn/components/ui/button";
 </script>
 
-<Button onclick={toggleMode} variant="outline" size="icon">
+<Button
+  onclick={toggleMode}
+  variant="outline"
+  size="icon"
+  class="border bg-background/85 p-1.5 shadow-sm backdrop-blur"
+>
   <SunIcon
-    class="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all! dark:-rotate-90 dark:scale-0"
+    class="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all! dark:-rotate-90 dark:scale-0 "
   />
   <MoonIcon
     class="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all! dark:rotate-0 dark:scale-100"

@@ -31,7 +31,9 @@
 		sessions.find((session) => session.id === data.filters.sessionId) ?? null,
 	);
 
-	let form = $state<DashboardFilters>(parseDashboardFilters(page.url.searchParams));
+	let form = $state<DashboardFilters>(
+		parseDashboardFilters(page.url.searchParams),
+	);
 
 	$effect(() => {
 		form = {
@@ -96,9 +98,11 @@
 	/>
 </svelte:head>
 
-<div class="min-h-screen bg-background text-foreground">
+<div
+	class="min-h-screen bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background)_90%,white)_0%,var(--background)_16rem)] text-foreground dark:bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background)_88%,black)_0%,var(--background)_18rem)]"
+>
 	<div
-		class="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8"
+		class="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10"
 	>
 		<DashboardHeader
 			baseUrl={data.dashboard.baseUrl}
@@ -118,8 +122,12 @@
 			{onEventLimitChange}
 		/>
 		{#if data.dashboard.error}
-			<div class="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
-				<p class="font-medium text-destructive">Dashboard data could not be loaded.</p>
+			<div
+				class="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm"
+			>
+				<p class="font-medium text-destructive">
+					Dashboard data could not be loaded.
+				</p>
 				<p class="mt-1 text-muted-foreground">
 					{data.dashboard.error}
 				</p>
@@ -144,7 +152,9 @@
 				</div>
 
 				<div class="grid gap-6">
-					<div class="grid gap-6 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+					<div
+						class="grid gap-6 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]"
+					>
 						<MessageListCard {messages} {selectedSession} />
 						<EventListCard {events} />
 					</div>
